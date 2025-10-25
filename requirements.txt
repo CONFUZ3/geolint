@@ -1,0 +1,10 @@
+geopandas>=0.14.0
+pyproj>=3.4.0
+shapely>=2.0.0
+fiona>=1.9.0
+rtree>=1.0.0
+streamlit>=1.28.0
+plotly>=5.17.0
+folium>=0.14.0
+pandas>=2.0.0
+numpy>=1.24.0
