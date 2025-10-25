@@ -140,8 +140,8 @@ def _calculate_crs_confidence(
     epsg = crs.to_epsg()
     if epsg:
         common_crs_scores = {
+            3857: 0.95,  # Web Mercator (prioritized for web mapping)
             4326: 0.9,   # WGS84
-            3857: 0.85,  # Web Mercator
             3395: 0.8,   # World Mercator
             2154: 0.7,   # RGF93 / Lambert-93
             2157: 0.7,   # IRENET95
@@ -219,21 +219,21 @@ def _get_fallback_crs_suggestions(bounds: Tuple[float, float, float, float],
     """Fallback CRS suggestions when database query fails."""
     suggestions = []
     
-    # WGS84 (always a good fallback)
+    # Web Mercator (prioritized for web mapping)
+    suggestions.append({
+        'epsg': 3857,
+        'name': 'WGS 84 / Pseudo-Mercator',
+        'confidence': 0.8,
+        'type': 'projected',
+        'area_of_use': 'World'
+    })
+    
+    # WGS84 (good fallback)
     suggestions.append({
         'epsg': 4326,
         'name': 'WGS 84',
         'confidence': 0.7,
         'type': 'geographic',
-        'area_of_use': 'World'
-    })
-    
-    # Web Mercator
-    suggestions.append({
-        'epsg': 3857,
-        'name': 'WGS 84 / Pseudo-Mercator',
-        'confidence': 0.6,
-        'type': 'projected',
         'area_of_use': 'World'
     })
     
@@ -262,8 +262,8 @@ def get_popular_crs() -> Dict[str, List[Dict[str, Union[str, int]]]]:
     """
     return {
         'global': [
-            {'epsg': 4326, 'name': 'WGS 84', 'description': 'World Geographic'},
             {'epsg': 3857, 'name': 'Web Mercator', 'description': 'Web mapping standard'},
+            {'epsg': 4326, 'name': 'WGS 84', 'description': 'World Geographic'},
             {'epsg': 3395, 'name': 'World Mercator', 'description': 'Traditional world projection'},
         ],
         'europe': [

@@ -84,9 +84,9 @@ def crs_selector(current_crs: Optional[Dict] = None,
     
     # Create comprehensive CRS options for dropdown
     crs_options = {
-        # Global/Web CRS
-        "WGS84 (EPSG:4326)": "EPSG:4326",
+        # Global/Web CRS (prioritized for web mapping)
         "Web Mercator (EPSG:3857)": "EPSG:3857",
+        "WGS84 (EPSG:4326)": "EPSG:4326",
         
         # European CRS
         "ETRS89 / UTM Zone 32N (EPSG:25832)": "EPSG:25832",
@@ -177,10 +177,10 @@ def crs_selector(current_crs: Optional[Dict] = None,
     current_crs_name = None
     if current_crs and current_crs.get('epsg'):
         current_epsg = current_crs.get('epsg')
-        if current_epsg == 4326:
-            current_crs_name = "WGS84 (EPSG:4326)"
-        elif current_epsg == 3857:
+        if current_epsg == 3857:
             current_crs_name = "Web Mercator (EPSG:3857)"
+        elif current_epsg == 4326:
+            current_crs_name = "WGS84 (EPSG:4326)"
         else:
             # Find matching CRS in options
             for name, epsg in crs_options.items():
@@ -257,63 +257,9 @@ def file_uploader(accept_types: List[str] = None,
     return uploaded_files if uploaded_files else []
 
 
-def _calculate_health_score(validation_report: Dict) -> float:
-    """
-    Calculate a health score (0-100) for the dataset.
-    
-    Args:
-        validation_report: Validation results dictionary
-        
-    Returns:
-        Health score between 0 and 100
-    """
-    score = 100.0
-    
-    # Deduct points for issues
-    validation = validation_report.get('validation', {})
-    geometry_validation = validation_report.get('geometry_validation', {})
-    
-    # CRS issues (-20 points)
-    if not validation.get('crs_present', False):
-        score -= 20
-    
-    # Geometry issues
-    invalid_count = geometry_validation.get('invalid_count', 0)
-    empty_count = geometry_validation.get('empty_count', 0)
-    total_features = geometry_validation.get('total_features', 1)
-    
-    # Invalid geometries (-30 points max)
-    if invalid_count > 0:
-        invalid_ratio = invalid_count / total_features
-        score -= min(30, invalid_ratio * 100)
-    
-    # Empty geometries (-20 points max)
-    if empty_count > 0:
-        empty_ratio = empty_count / total_features
-        score -= min(20, empty_ratio * 100)
-    
-    # Mixed geometry types (-10 points)
-    if geometry_validation.get('mixed_types', False):
-        score -= 10
-    
-    # Shapefile bundle issues (-10 points)
-    shapefile_bundle = validation_report.get('shapefile_bundle', {})
-    if not shapefile_bundle.get('is_complete', True):
-        score -= 10
-    
-    # Warnings and errors
-    warnings_count = len(validation_report.get('warnings', []))
-    errors_count = len(validation_report.get('errors', []))
-    
-    score -= warnings_count * 2  # -2 points per warning
-    score -= errors_count * 5    # -5 points per error
-    
-    return max(0, min(100, score))
-
-
 def create_map_visualization(gdf: Any) -> None:
     """
-    Create an interactive map visualization of the geospatial data.
+    Create an interactive map visualization using Folium.
     
     Args:
         gdf: GeoDataFrame to visualize
@@ -323,101 +269,165 @@ def create_map_visualization(gdf: Any) -> None:
         return
     
     try:
-        # Handle CRS for proper visualization
+        import folium
+        from streamlit_folium import st_folium
+        
+        # Display CRS information
         if gdf.crs is None:
             st.warning("No CRS information found. Assuming WGS84 (EPSG:4326).")
             gdf = gdf.set_crs("EPSG:4326")
         else:
             current_epsg = gdf.crs.to_epsg()
-            crs_name = gdf.crs.name.lower()
+            crs_name = gdf.crs.name
             
-            # Check if data is already in a web-compatible CRS
-            if current_epsg == 4326:  # WGS84 - perfect for web maps
+            if current_epsg == 4326:
                 st.success("✅ Data in WGS84 (EPSG:4326) - optimal for web mapping")
-            elif current_epsg == 3857 or "pseudo-mercator" in crs_name or "web mercator" in crs_name:  # Web Mercator
-                st.info("ℹ️ Data in Web Mercator (EPSG:3857) - good for web mapping")
-                st.caption("💡 Note: 'WGS 84 / Pseudo-Mercator' is actually Web Mercator (EPSG:3857), not WGS84 (EPSG:4326)")
+            elif current_epsg == 3857:
+                st.success("✅ Data in Web Mercator (EPSG:3857) - optimal for web mapping")
             else:
-                # Reproject to WGS84 for web visualization
-                st.info(f"🔄 Reprojecting from {gdf.crs} to WGS84 for web visualization...")
-                gdf = gdf.to_crs("EPSG:4326")
+                st.info(f"ℹ️ Data in {crs_name} (EPSG:{current_epsg}) - will be reprojected for web display")
+        
+        # Show dataset info
+        st.markdown(f"**Dataset Info:** {len(gdf)} features, CRS: {gdf.crs}")
+        bounds = gdf.total_bounds
+        st.markdown(f"**Bounds:** X: {bounds[0]:.6f} to {bounds[2]:.6f}, Y: {bounds[1]:.6f} to {bounds[3]:.6f}")
+        
+        # Determine if reprojection is needed
+        current_epsg = gdf.crs.to_epsg()
+        web_friendly_crs = [4326, 3857]  # WGS84 and Web Mercator
+        
+        if current_epsg not in web_friendly_crs:
+            st.info("🔄 Reprojecting to WGS84 for web visualization...")
+            gdf_web = gdf.to_crs("EPSG:4326")
+            use_web_mercator_tiles = False
+        else:
+            # Use data as-is for web-friendly CRS
+            gdf_web = gdf.copy()
+            if current_epsg == 4326:
+                st.success("✅ Data already in WGS84 - optimal for web mapping")
+                use_web_mercator_tiles = False
+            elif current_epsg == 3857:
+                st.success("✅ Data in Web Mercator - optimal for web mapping")
+                use_web_mercator_tiles = True
+        
+        # Calculate map center and zoom based on CRS
+        bounds_web = gdf_web.total_bounds
+        
+        if current_epsg == 3857:
+            # For Web Mercator, convert to lat/lon for map center
+            from pyproj import Transformer
+            transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+            center_x = (bounds_web[0] + bounds_web[2]) / 2
+            center_y = (bounds_web[1] + bounds_web[3]) / 2
+            center_lon, center_lat = transformer.transform(center_x, center_y)
+        else:
+            # For WGS84, use coordinates directly
+            center_lat = (bounds_web[1] + bounds_web[3]) / 2
+            center_lon = (bounds_web[0] + bounds_web[2]) / 2
+        
+        # Create Folium map with appropriate tiles
+        if use_web_mercator_tiles:
+            # Use Web Mercator tiles for EPSG:3857 data
+            m = folium.Map(
+                location=[center_lat, center_lon],
+                zoom_start=10,
+                tiles='OpenStreetMap',
+                crs='EPSG3857'
+            )
+        else:
+            # Use standard tiles for WGS84 data
+            m = folium.Map(
+                location=[center_lat, center_lon],
+                zoom_start=10,
+                tiles='OpenStreetMap'
+            )
         
         # Handle different geometry types
-        geom_types = gdf.geometry.geom_type.unique()
+        geom_types = gdf_web.geometry.geom_type.unique()
         
-        if 'Point' in geom_types and len(geom_types) == 1:
-            # Point data - use st.map with sampling for performance
-            gdf['lat'] = gdf.geometry.y
-            gdf['lon'] = gdf.geometry.x
+        if 'Point' in geom_types:
+            # Add point data
+            point_data = gdf_web[gdf_web.geometry.geom_type == 'Point'].copy()
             
-            # Smart sampling for large datasets
-            if len(gdf) > 2000:
-                # Use systematic sampling for better coverage
-                sample_size = min(2000, len(gdf))
-                step = len(gdf) // sample_size
-                display_data = gdf.iloc[::step][['lat', 'lon']].head(sample_size)
-                st.info(f"📊 Showing {len(display_data)} of {len(gdf)} points for performance.")
-            else:
-                display_data = gdf[['lat', 'lon']]
-            
-            st.map(display_data)
-            
-        elif 'Point' in geom_types:
-            # Mixed geometry types with points
-            point_data = gdf[gdf.geometry.geom_type == 'Point'].copy()
-            point_data['lat'] = point_data.geometry.y
-            point_data['lon'] = point_data.geometry.x
-            
-            if len(point_data) > 2000:
-                sample_size = min(2000, len(point_data))
+            # Sample for performance if too many points
+            if len(point_data) > 1000:
+                sample_size = min(1000, len(point_data))
                 step = len(point_data) // sample_size
-                display_data = point_data.iloc[::step][['lat', 'lon']].head(sample_size)
-            else:
-                display_data = point_data[['lat', 'lon']]
+                point_data = point_data.iloc[::step]
+                st.info(f"📊 Showing {len(point_data)} of {len(gdf_web[gdf_web.geometry.geom_type == 'Point'])} points for performance.")
             
-            st.map(display_data)
-            
-            # Show info about other geometry types
-            other_types = [t for t in geom_types if t != 'Point']
-            if other_types:
-                st.info(f"📍 Map shows {len(display_data)} points. Other geometry types ({', '.join(other_types)}) are not displayed on the map.")
+            # Add points to map
+            for idx, row in point_data.iterrows():
+                if current_epsg == 3857:
+                    # For Web Mercator, convert coordinates to lat/lon for Folium
+                    from pyproj import Transformer
+                    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+                    lon, lat = transformer.transform(row.geometry.x, row.geometry.y)
+                else:
+                    # For WGS84, use coordinates directly
+                    lat, lon = row.geometry.y, row.geometry.x
+                
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=3,
+                    popup=f"Feature {idx}",
+                    color='blue',
+                    fill=True
+                ).add_to(m)
         
-        else:
-            # Non-point geometries - show bounds and create a simplified visualization
-            bounds = gdf.total_bounds
+        # Add other geometry types as centroids
+        other_geoms = gdf_web[~gdf_web.geometry.geom_type.isin(['Point'])]
+        if len(other_geoms) > 0:
+            # Sample for performance
+            if len(other_geoms) > 500:
+                sample_size = min(500, len(other_geoms))
+                step = len(other_geoms) // sample_size
+                other_geoms = other_geoms.iloc[::step]
+                st.info(f"📍 Showing centroids of {len(other_geoms)} of {len(gdf_web[~gdf_web.geometry.geom_type.isin(['Point'])])} non-point features for performance.")
             
-            # Create a centroid-based visualization for complex geometries
-            centroids = gdf.geometry.centroid
-            centroid_gdf = gpd.GeoDataFrame(geometry=centroids, crs=gdf.crs)
-            centroid_gdf['lat'] = centroid_gdf.geometry.y
-            centroid_gdf['lon'] = centroid_gdf.geometry.x
-            
-            # Sample centroids for performance
-            if len(centroid_gdf) > 1000:
-                sample_size = min(1000, len(centroid_gdf))
-                step = len(centroid_gdf) // sample_size
-                display_data = centroid_gdf.iloc[::step][['lat', 'lon']].head(sample_size)
-                st.info(f"📍 Showing centroids of {len(display_data)} of {len(gdf)} features for performance.")
-            else:
-                display_data = centroid_gdf[['lat', 'lon']]
-            
-            st.map(display_data)
-            
-            # Show bounds information
-            st.markdown("**Dataset Bounds:**")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**West:** {bounds[0]:.6f}")
-                st.write(f"**South:** {bounds[1]:.6f}")
-            with col2:
-                st.write(f"**East:** {bounds[2]:.6f}")
-                st.write(f"**North:** {bounds[3]:.6f}")
-            
-            # Show geometry type distribution
-            geom_type_counts = gdf.geometry.geom_type.value_counts()
-            st.markdown("**Geometry Types:**")
-            for geom_type, count in geom_type_counts.items():
-                st.write(f"• {geom_type}: {count}")
+            for idx, row in other_geoms.iterrows():
+                centroid = row.geometry.centroid
+                if current_epsg == 3857:
+                    # For Web Mercator, convert coordinates to lat/lon for Folium
+                    from pyproj import Transformer
+                    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+                    lon, lat = transformer.transform(centroid.x, centroid.y)
+                else:
+                    # For WGS84, use coordinates directly
+                    lat, lon = centroid.y, centroid.x
+                
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=5,
+                    popup=f"Feature {idx} ({row.geometry.geom_type})",
+                    color='red',
+                    fill=True
+                ).add_to(m)
+        
+        # Add geometry type legend
+        legend_html = '''
+        <div style="position: fixed; 
+                    bottom: 50px; left: 50px; width: 150px; height: 90px; 
+                    background-color: white; border:2px solid grey; z-index:9999; 
+                    font-size:14px; padding: 10px">
+        <p><b>Geometry Types:</b></p>
+        <p><i class="fa fa-circle" style="color:blue"></i> Points</p>
+        <p><i class="fa fa-circle" style="color:red"></i> Other (centroids)</p>
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(legend_html))
+        
+        # Display the map with stable key based on data
+        import hashlib
+        data_signature = f"{len(gdf)}_{gdf.crs.to_epsg() if gdf.crs else 'no_crs'}"
+        stable_key = f"map_{hashlib.md5(data_signature.encode()).hexdigest()[:8]}"
+        st_folium(m, width=700, height=500, key=stable_key)
+        
+        # Show geometry type distribution
+        geom_type_counts = gdf.geometry.geom_type.value_counts()
+        st.markdown("**Geometry Types:**")
+        for geom_type, count in geom_type_counts.items():
+            st.write(f"• {geom_type}: {count}")
         
         # Show dataset summary
         st.markdown("**Dataset Summary:**")
@@ -432,7 +442,6 @@ def create_map_visualization(gdf: Any) -> None:
                 epsg_code = gdf.crs.to_epsg()
                 crs_name = gdf.crs.name
                 
-                # Show more descriptive CRS information
                 if epsg_code == 4326:
                     st.metric("CRS", "WGS84 (EPSG:4326)")
                 elif epsg_code == 3857:
@@ -505,166 +514,60 @@ def validation_dashboard(validation_report: Dict, gdf: Any = None) -> None:
             status=crs_status,
             help_text="Coordinate Reference System information"
         )
+
+
+def _calculate_health_score(validation_report: Dict) -> float:
+    """
+    Calculate a health score (0-100) for the dataset.
     
-    # Geometry statistics
-    geom_validation = validation_report.get('geometry_validation', {})
-    if geom_validation:
-        st.markdown("#### 🔍 Geometry Analysis")
+    Args:
+        validation_report: Validation results dictionary
         
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            valid_count = geom_validation.get('valid_count', 0)
-            total_count = geom_validation.get('total_features', 1)
-            valid_pct = (valid_count / total_count) * 100
-            metric_card(
-                "Valid Geometries",
-                f"{valid_pct:.1f}%",
-                status="success" if valid_pct >= 90 else "warning" if valid_pct >= 70 else "error"
-            )
-        
-        with col2:
-            invalid_count = geom_validation.get('invalid_count', 0)
-            metric_card(
-                "Invalid Geometries",
-                invalid_count,
-                status="error" if invalid_count > 0 else "success"
-            )
-        
-        with col3:
-            empty_count = geom_validation.get('empty_count', 0)
-            metric_card(
-                "Empty Geometries",
-                empty_count,
-                status="error" if empty_count > 0 else "success"
-            )
-        
-        with col4:
-            mixed_types = geom_validation.get('mixed_types', False)
-            metric_card(
-                "Mixed Types",
-                "Yes" if mixed_types else "No",
-                status="warning" if mixed_types else "success"
-            )
-        
-        # Geometry type distribution chart
-        if geom_validation.get('geometry_types'):
-            st.markdown("#### 📈 Geometry Type Distribution")
-            geom_types = geom_validation['geometry_types']
-            type_counts = pd.Series(geom_types).value_counts()
-            
-            fig = px.pie(
-                values=type_counts.values,
-                names=type_counts.index,
-                title="Geometry Types",
-                color_discrete_sequence=px.colors.qualitative.Set3
-            )
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig, use_container_width=True)
+    Returns:
+        Health score between 0 and 100
+    """
+    score = 100.0
     
-    # Add map visualization section
-    st.markdown("#### 🗺️ Data Visualization")
+    # Deduct points for issues
+    validation = validation_report.get('validation', {})
+    geometry_validation = validation_report.get('geometry_validation', {})
     
-    # Create tabs for different visualizations
-    viz_tab1, viz_tab2, viz_tab3 = st.tabs(["📍 Map View", "📊 Statistics", "📋 Attribute Table"])
+    # CRS issues (-20 points)
+    if not validation.get('crs_present', False):
+        score -= 20
     
-    with viz_tab1:
-        if gdf is not None and len(gdf) > 0:
-            create_map_visualization(gdf)
-        else:
-            st.markdown("**Interactive Map Preview**")
-            st.info("Map visualization will be available after data processing. Upload a file to see the interactive map.")
+    # Geometry issues
+    invalid_count = geometry_validation.get('invalid_count', 0)
+    empty_count = geometry_validation.get('empty_count', 0)
+    total_features = geometry_validation.get('total_features', 1)
     
-    with viz_tab2:
-        st.markdown("**Dataset Statistics**")
-        
-        # Show basic statistics
-        if validation_report.get('validation', {}).get('feature_count', 0) > 0:
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric("Total Features", validation_report.get('validation', {}).get('feature_count', 0))
-            
-            with col2:
-                st.metric("Columns", validation_report.get('validation', {}).get('column_count', 0))
-            
-            with col3:
-                geom_validation = validation_report.get('geometry_validation', {})
-                if geom_validation:
-                    valid_pct = (geom_validation.get('valid_count', 0) / geom_validation.get('total_features', 1)) * 100
-                    st.metric("Valid Geometries", f"{valid_pct:.1f}%")
-        
-        # Show warnings and errors if any
-        warnings = validation_report.get('warnings', [])
-        errors = validation_report.get('errors', [])
-        
-        if warnings or errors:
-            st.markdown("**Issues Found:**")
-            
-            if warnings:
-                st.markdown("**Warnings:**")
-                for warning in warnings:
-                    st.warning(f"⚠️ {warning}")
-            
-            if errors:
-                st.markdown("**Errors:**")
-                for error in errors:
-                    st.error(f"❌ {error}")
+    # Invalid geometries (-30 points max)
+    if invalid_count > 0:
+        invalid_ratio = invalid_count / total_features
+        score -= min(30, invalid_ratio * 100)
     
-    with viz_tab3:
-        st.markdown("**Attribute Table**")
-        
-        if gdf is not None and len(gdf) > 0:
-            # Show basic info about the dataset
-            st.markdown(f"**Dataset Overview:** {len(gdf)} features, {len(gdf.columns)} columns")
-            
-            # Display column information
-            st.markdown("**Column Information:**")
-            col_info = []
-            for col in gdf.columns:
-                if col != 'geometry':  # Skip geometry column for basic info
-                    dtype = str(gdf[col].dtype)
-                    null_count = gdf[col].isnull().sum()
-                    col_info.append({
-                        'Column': col,
-                        'Type': dtype,
-                        'Null Count': null_count,
-                        'Unique Values': gdf[col].nunique()
-                    })
-            
-            if col_info:
-                col_df = pd.DataFrame(col_info)
-                st.dataframe(col_df, use_container_width=True)
-            
-            # Show sample of the data
-            st.markdown("**Data Preview (first 10 rows):**")
-            
-            # Create a copy without geometry for display
-            display_df = gdf.drop(columns=['geometry']).head(10)
-            
-            if len(display_df) > 0:
-                st.dataframe(display_df, use_container_width=True)
-            else:
-                st.info("No attribute data to display.")
-            
-            # Show geometry information
-            st.markdown("**Geometry Information:**")
-            geom_types = gdf.geometry.geom_type.value_counts()
-            st.write(geom_types)
-            
-            # Show bounds if available
-            try:
-                bounds = gdf.total_bounds
-                st.markdown("**Spatial Extent:**")
-                st.write(f"West: {bounds[0]:.6f}")
-                st.write(f"South: {bounds[1]:.6f}")
-                st.write(f"East: {bounds[2]:.6f}")
-                st.write(f"North: {bounds[3]:.6f}")
-            except Exception as e:
-                st.warning(f"Could not calculate spatial extent: {str(e)}")
-        
-        else:
-            st.info("No data available for attribute table. Upload a file to see the attribute information.")
+    # Empty geometries (-20 points max)
+    if empty_count > 0:
+        empty_ratio = empty_count / total_features
+        score -= min(20, empty_ratio * 100)
+    
+    # Mixed geometry types (-10 points)
+    if geometry_validation.get('mixed_types', False):
+        score -= 10
+    
+    # Shapefile bundle issues (-10 points)
+    shapefile_bundle = validation_report.get('shapefile_bundle', {})
+    if not shapefile_bundle.get('is_complete', True):
+        score -= 10
+    
+    # Warnings and errors
+    warnings_count = len(validation_report.get('warnings', []))
+    errors_count = len(validation_report.get('errors', []))
+    
+    score -= warnings_count * 2  # -2 points per warning
+    score -= errors_count * 5    # -5 points per error
+    
+    return max(0, min(100, score))
 
 
 def batch_queue_display(datasets: List[Dict]) -> None:
@@ -695,23 +598,6 @@ def batch_queue_display(datasets: List[Dict]) -> None:
     with col3:
         size_mb = total_size / (1024 * 1024)
         metric_card("Total Size", f"{size_mb:.1f} MB")
-    
-    # Dataset table
-    st.markdown("#### 📄 Dataset Details")
-    
-    df_data = []
-    for i, dataset in enumerate(datasets):
-        df_data.append({
-            'Name': dataset.get('name', f'Dataset {i+1}'),
-            'Features': dataset.get('feature_count', 0),
-            'Size (MB)': round(dataset.get('file_size', 0) / (1024 * 1024), 1),
-            'CRS': dataset.get('crs_name', 'Unknown'),
-            'Status': dataset.get('status', 'Ready')
-        })
-    
-    if df_data:
-        df = pd.DataFrame(df_data)
-        st.dataframe(df, use_container_width=True)
 
 
 def progress_bar(current: int, total: int, message: str = "") -> None:

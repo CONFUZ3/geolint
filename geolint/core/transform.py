@@ -330,11 +330,18 @@ def validate_crs_compatibility(
         if gdf.crs.is_geographic and target_crs.is_geographic:
             warnings.append("Both CRS are geographic - transformation may be unnecessary")
         
+        # Special handling for web-friendly CRS
+        src_epsg = gdf.crs.to_epsg()
+        tgt_epsg = target_crs.to_epsg()
+        
+        if src_epsg == 3857 and tgt_epsg == 4326:
+            warnings.append("Transforming from Web Mercator to WGS84 - consider keeping Web Mercator for web mapping")
+        elif src_epsg == 4326 and tgt_epsg == 3857:
+            warnings.append("Transforming from WGS84 to Web Mercator - good for web mapping")
+        
         if gdf.crs.is_projected and target_crs.is_projected:
             # Check if both are UTM zones
             if (hasattr(gdf.crs, 'to_epsg') and hasattr(target_crs, 'to_epsg')):
-                src_epsg = gdf.crs.to_epsg()
-                tgt_epsg = target_crs.to_epsg()
                 if (32601 <= src_epsg <= 32660 or 32701 <= src_epsg <= 32760) and \
                    (32601 <= tgt_epsg <= 32660 or 32701 <= tgt_epsg <= 32760):
                     warnings.append("Both CRS are UTM zones - check if zones are appropriate")

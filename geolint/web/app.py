@@ -65,6 +65,9 @@ def initialize_session_state():
     
     if 'batch_processor' not in st.session_state:
         st.session_state.batch_processor = BatchProcessor()
+    
+    if 'show_final_map' not in st.session_state:
+        st.session_state.show_final_map = False
 
 
 def render_sidebar():
@@ -150,7 +153,8 @@ def single_file_mode():
                 # Clear session state
                 for key in ['uploaded_files', 'validation_reports', 'processed_data', 
                            'original_data', 'transformed_data', 'selected_crs', 
-                           'final_processed_data', 'final_report', 'geometry_report']:
+                           'final_processed_data', 'final_report', 'geometry_report', 
+                           'show_final_map']:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()
@@ -299,70 +303,55 @@ def single_file_mode():
                         except Exception as e:
                             error_message("CRS transformation failed", str(e))
             
-            # Show before/after comparison if transformation was applied
+            # Show transformation summary if applied
             if st.session_state.get('transformed_data') is not None:
-                st.markdown("### 🔄 Before vs After CRS Transformation")
+                st.markdown("### 🔄 CRS Transformation Applied")
                 
-                # Create comparison tabs
-                comparison_tab1, comparison_tab2, comparison_tab3 = st.tabs([
-                    "📍 Side-by-Side Maps", 
-                    "📊 Data Comparison", 
-                    "📐 Bounds Analysis"
-                ])
+                # Show transformation summary
+                col1, col2 = st.columns(2)
                 
-                with comparison_tab1:
-                    st.markdown("#### Original Data (Before Transformation)")
-                    from geolint.web.components import create_map_visualization
-                    create_map_visualization(original_gdf)
-                    
-                    st.markdown("#### Transformed Data (After Transformation)")
-                    create_map_visualization(st.session_state.transformed_data)
+                with col1:
+                    st.markdown("**Original Data:**")
+                    st.write(f"CRS: {original_gdf.crs}")
+                    st.write(f"Features: {len(original_gdf)}")
+                    bounds = original_gdf.total_bounds
+                    st.write(f"Bounds: {bounds}")
                 
-                with comparison_tab2:
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown("**Original Data:**")
-                        st.write(f"CRS: {original_gdf.crs}")
-                        st.write(f"Features: {len(original_gdf)}")
-                        bounds = original_gdf.total_bounds
-                        st.write(f"Bounds: {bounds}")
-                    
-                    with col2:
-                        st.markdown("**Transformed Data:**")
-                        st.write(f"CRS: {st.session_state.transformed_data.crs}")
-                        st.write(f"Features: {len(st.session_state.transformed_data)}")
-                        bounds = st.session_state.transformed_data.total_bounds
-                        st.write(f"Bounds: {bounds}")
+                with col2:
+                    st.markdown("**Transformed Data:**")
+                    st.write(f"CRS: {st.session_state.transformed_data.crs}")
+                    st.write(f"Features: {len(st.session_state.transformed_data)}")
+                    bounds = st.session_state.transformed_data.total_bounds
+                    st.write(f"Bounds: {bounds}")
                 
-                with comparison_tab3:
-                    st.markdown("#### Bounds Comparison")
-                    
-                    original_bounds = original_gdf.total_bounds
-                    transformed_bounds = st.session_state.transformed_data.total_bounds
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.markdown("**Original Bounds:**")
-                        st.write(f"X: {original_bounds[0]:.6f} to {original_bounds[2]:.6f}")
-                        st.write(f"Y: {original_bounds[1]:.6f} to {original_bounds[3]:.6f}")
-                        original_area = (original_bounds[2] - original_bounds[0]) * (original_bounds[3] - original_bounds[1])
-                        st.write(f"Area: {original_area:.6f}")
-                    
-                    with col2:
-                        st.markdown("**Transformed Bounds:**")
-                        st.write(f"X: {transformed_bounds[0]:.6f} to {transformed_bounds[2]:.6f}")
-                        st.write(f"Y: {transformed_bounds[1]:.6f} to {transformed_bounds[3]:.6f}")
-                        transformed_area = (transformed_bounds[2] - transformed_bounds[0]) * (transformed_bounds[3] - transformed_bounds[1])
-                        st.write(f"Area: {transformed_area:.6f}")
-                    
-                    # Calculate area change
-                    if original_area > 0:
-                        area_ratio = transformed_area / original_area
-                        change_pct = (area_ratio - 1) * 100
-                        change_type = "increase" if change_pct > 0 else "decrease"
-                        st.info(f"Area {change_type}s by {abs(change_pct):.1f}% after transformation")
+                # Show bounds comparison
+                st.markdown("#### 📐 Bounds Comparison")
+                
+                original_bounds = original_gdf.total_bounds
+                transformed_bounds = st.session_state.transformed_data.total_bounds
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("**Original Bounds:**")
+                    st.write(f"X: {original_bounds[0]:.6f} to {original_bounds[2]:.6f}")
+                    st.write(f"Y: {original_bounds[1]:.6f} to {original_bounds[3]:.6f}")
+                    original_area = (original_bounds[2] - original_bounds[0]) * (original_bounds[3] - original_bounds[1])
+                    st.write(f"Area: {original_area:.6f}")
+                
+                with col2:
+                    st.markdown("**Transformed Bounds:**")
+                    st.write(f"X: {transformed_bounds[0]:.6f} to {transformed_bounds[2]:.6f}")
+                    st.write(f"Y: {transformed_bounds[1]:.6f} to {transformed_bounds[3]:.6f}")
+                    transformed_area = (transformed_bounds[2] - transformed_bounds[0]) * (transformed_bounds[3] - transformed_bounds[1])
+                    st.write(f"Area: {transformed_area:.6f}")
+                
+                # Calculate area change
+                if original_area > 0:
+                    area_ratio = transformed_area / original_area
+                    change_pct = (area_ratio - 1) * 100
+                    change_type = "increase" if change_pct > 0 else "decrease"
+                    st.info(f"Area {change_type}s by {abs(change_pct):.1f}% after transformation")
             
             # Bounds preview if CRS selected but not yet applied
             elif selected_crs and crs_info.get('crs'):
@@ -492,9 +481,33 @@ def single_file_mode():
                         with col3:
                             geom_types = gdf.geometry.geom_type.nunique()
                             st.metric("Geometry Types", geom_types)
+                        
+                        # Add visualization button for final processed data
+                        st.markdown("#### 🗺️ Visualize Processed Data")
+                        if st.button("📍 Show Final Data on Map", type="primary", use_container_width=True):
+                            st.session_state.show_final_map = True
                     
                     except Exception as e:
                         error_message("AutoFix failed", str(e))
+        
+        # Show final map if requested
+        if st.session_state.get('show_final_map') and st.session_state.get('final_processed_data') is not None:
+            st.markdown("### 🗺️ Final Processed Data Visualization")
+            
+            # Use final processed data if available, otherwise use transformed or original
+            final_data = st.session_state.get('final_processed_data')
+            if final_data is None:
+                final_data = st.session_state.get('transformed_data')
+            if final_data is None:
+                final_data = st.session_state.processed_data
+            
+            from geolint.web.components import create_map_visualization
+            create_map_visualization(final_data)
+            
+            # Add button to hide the map
+            if st.button("❌ Hide Map", type="secondary"):
+                st.session_state.show_final_map = False
+                st.rerun()
         
         # Step 4: Download Results
         if st.session_state.get('final_report'):
@@ -791,7 +804,7 @@ def main():
     st.markdown(
         """
         <div style='text-align: center; color: #666;'>
-            <p>GeoLint v1.0.0 | Made with ❤️ for the geospatial community</p>
+            <p>GeoLint v0.1.0 | Made with ❤️ for the geospatial community by CONFUZ3</p>
         </div>
         """,
         unsafe_allow_html=True
