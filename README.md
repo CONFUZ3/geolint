@@ -93,13 +93,6 @@ geolint/
 └── requirements.txt
 ```
 
-## Philosophy
-
-- **Validation First**: Always validate before attempting to fix
-- **Explicit Over Implicit**: Trust existing metadata, only infer when missing
-- **Report Everything**: All actions logged in structured JSON reports
-- **Vector Focus**: Designed specifically for vector data (raster support planned for v3.0)
-
 ## Development
 
 ### Running Tests
@@ -115,17 +108,3 @@ black geolint/
 isort geolint/
 ```
 
-## License
-
-MIT License - see LICENSE file for details.
-
-## Contributing
-
-Contributions welcome! Please see CONTRIBUTING.md for guidelines.
-
-## Roadmap
-
-- **v1.0**: Core validation and web interface ✅
-- **v1.5**: API endpoints and advanced UI features
-- **v2.0**: Batch processing and robust CRS inference
-- **v3.0**: Raster data support
