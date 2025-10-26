@@ -29,7 +29,7 @@ def metric_card(title: str, value: Any, delta: Optional[str] = None,
     with col1:
         st.markdown(f"**{title}**")
         if help_text:
-            st.markdown(f"<span class='tooltip' title='{help_text}'>ℹ️</span>", unsafe_allow_html=True)
+            st.markdown(f"<span class='tooltip' title='{help_text}'>i</span>", unsafe_allow_html=True)
     
     with col2:
         if delta:
@@ -72,7 +72,7 @@ def crs_selector(current_crs: Optional[Dict] = None,
     Returns:
         Selected CRS string or None
     """
-    st.markdown("### 🗺️ Coordinate Reference System")
+    st.markdown("### Coordinate Reference System")
     
     # Current CRS display
     if current_crs and current_crs.get('crs'):
@@ -221,7 +221,7 @@ def file_uploader(accept_types: List[str] = None,
     if accept_types is None:
         accept_types = ['.zip', '.gpkg', '.geojson', '.shp']
     
-    st.markdown("### 📁 Upload Geospatial Data")
+    st.markdown("### Upload Geospatial Data")
     
     if help_text:
         st.info(help_text)
@@ -247,7 +247,7 @@ def file_uploader(accept_types: List[str] = None,
         for i, file in enumerate(uploaded_files):
             col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
-                st.write(f"📄 {file.name}")
+                st.write(f"File: {file.name}")
             with col2:
                 size_mb = file.size / (1024 * 1024)
                 st.write(f"{size_mb:.1f} MB")
@@ -281,11 +281,11 @@ def create_map_visualization(gdf: Any) -> None:
             crs_name = gdf.crs.name
             
             if current_epsg == 4326:
-                st.success("✅ Data in WGS84 (EPSG:4326) - optimal for web mapping")
+                st.success("Data in WGS84 (EPSG:4326) - optimal for web mapping")
             elif current_epsg == 3857:
-                st.success("✅ Data in Web Mercator (EPSG:3857) - optimal for web mapping")
+                st.success("Data in Web Mercator (EPSG:3857) - optimal for web mapping")
             else:
-                st.info(f"ℹ️ Data in {crs_name} (EPSG:{current_epsg}) - will be reprojected for web display")
+                st.info(f"Data in {crs_name} (EPSG:{current_epsg}) - will be reprojected for web display")
         
         # Show dataset info
         st.markdown(f"**Dataset Info:** {len(gdf)} features, CRS: {gdf.crs}")
@@ -297,17 +297,17 @@ def create_map_visualization(gdf: Any) -> None:
         web_friendly_crs = [4326, 3857]  # WGS84 and Web Mercator
         
         if current_epsg not in web_friendly_crs:
-            st.info("🔄 Reprojecting to WGS84 for web visualization...")
+            st.info("Reprojecting to WGS84 for web visualization...")
             gdf_web = gdf.to_crs("EPSG:4326")
             use_web_mercator_tiles = False
         else:
             # Use data as-is for web-friendly CRS
             gdf_web = gdf.copy()
             if current_epsg == 4326:
-                st.success("✅ Data already in WGS84 - optimal for web mapping")
+                st.success("Data already in WGS84 - optimal for web mapping")
                 use_web_mercator_tiles = False
             elif current_epsg == 3857:
-                st.success("✅ Data in Web Mercator - optimal for web mapping")
+                st.success("Data in Web Mercator - optimal for web mapping")
                 use_web_mercator_tiles = True
         
         # Calculate map center and zoom based on CRS
@@ -354,7 +354,7 @@ def create_map_visualization(gdf: Any) -> None:
                 sample_size = min(1000, len(point_data))
                 step = len(point_data) // sample_size
                 point_data = point_data.iloc[::step]
-                st.info(f"📊 Showing {len(point_data)} of {len(gdf_web[gdf_web.geometry.geom_type == 'Point'])} points for performance.")
+                st.info(f"Showing {len(point_data)} of {len(gdf_web[gdf_web.geometry.geom_type == 'Point'])} points for performance.")
             
             # Add points to map
             for idx, row in point_data.iterrows():
@@ -383,7 +383,7 @@ def create_map_visualization(gdf: Any) -> None:
                 sample_size = min(500, len(other_geoms))
                 step = len(other_geoms) // sample_size
                 other_geoms = other_geoms.iloc[::step]
-                st.info(f"📍 Showing centroids of {len(other_geoms)} of {len(gdf_web[~gdf_web.geometry.geom_type.isin(['Point'])])} non-point features for performance.")
+                st.info(f"Showing centroids of {len(other_geoms)} of {len(gdf_web[~gdf_web.geometry.geom_type.isin(['Point'])])} non-point features for performance.")
             
             for idx, row in other_geoms.iterrows():
                 centroid = row.geometry.centroid
@@ -452,7 +452,7 @@ def create_map_visualization(gdf: Any) -> None:
                 st.metric("CRS", "Unknown")
             
     except Exception as e:
-        st.error(f"❌ Could not create map visualization: {str(e)}")
+        st.error(f"Could not create map visualization: {str(e)}")
         st.markdown("**Fallback Information:**")
         try:
             bounds = gdf.total_bounds
@@ -471,7 +471,7 @@ def validation_dashboard(validation_report: Dict, gdf: Any = None) -> None:
         validation_report: Validation results dictionary
         gdf: Optional GeoDataFrame for map visualization
     """
-    st.markdown("### 📊 Validation Dashboard")
+    st.markdown("### Validation Dashboard")
     
     # Calculate health score
     health_score = _calculate_health_score(validation_report)
@@ -577,7 +577,7 @@ def batch_queue_display(datasets: List[Dict]) -> None:
     Args:
         datasets: List of dataset information dictionaries
     """
-    st.markdown("### 📋 Batch Processing Queue")
+    st.markdown("### Batch Processing Queue")
     
     if not datasets:
         st.info("No datasets in queue. Upload files to get started.")
@@ -628,7 +628,7 @@ def error_message(message: str, details: str = None) -> None:
     """
     st.markdown(f"""
     <div class="error-message">
-        <strong>❌ Error:</strong> {message}
+        <strong>Error:</strong> {message}
         {f"<br><small>{details}</small>" if details else ""}
     </div>
     """, unsafe_allow_html=True)
@@ -644,7 +644,7 @@ def success_message(message: str, details: str = None) -> None:
     """
     st.markdown(f"""
     <div class="success-message">
-        <strong>✅ Success:</strong> {message}
+        <strong>Success:</strong> {message}
         {f"<br><small>{details}</small>" if details else ""}
     </div>
     """, unsafe_allow_html=True)
@@ -660,7 +660,7 @@ def warning_message(message: str, details: str = None) -> None:
     """
     st.markdown(f"""
     <div class="warning-message">
-        <strong>⚠️ Warning:</strong> {message}
+        <strong>Warning:</strong> {message}
         {f"<br><small>{details}</small>" if details else ""}
     </div>
     """, unsafe_allow_html=True)
@@ -676,7 +676,7 @@ def info_message(message: str, details: str = None) -> None:
     """
     st.markdown(f"""
     <div class="info-message">
-        <strong>ℹ️ Info:</strong> {message}
+        <strong>Info:</strong> {message}
         {f"<br><small>{details}</small>" if details else ""}
     </div>
     """, unsafe_allow_html=True)
@@ -692,12 +692,12 @@ def download_section(cleaned_data: Any, report_data: Dict,
         report_data: Processing report
         filename: Base filename for downloads
     """
-    st.markdown("### 💾 Download Results")
+    st.markdown("### Download Results")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("#### 📄 Cleaned Data")
+        st.markdown("#### Cleaned Data")
         
         # Format selector
         format_choice = st.selectbox(
@@ -756,17 +756,17 @@ def download_section(cleaned_data: Any, report_data: Dict,
         
         # Provide download
         st.download_button(
-            label="📥 Download Cleaned Data",
+            label="Download Cleaned Data",
             data=file_data,
             file_name=f"{filename}{file_extension}",
             mime=mime_type
         )
     
     with col2:
-        st.markdown("#### 📊 Processing Report")
+        st.markdown("#### Processing Report")
         
         # Report download
-        if st.button("📋 Download JSON Report", type="secondary"):
+        if st.button("Download JSON Report", type="secondary"):
             try:
                 import json
                 
@@ -775,7 +775,7 @@ def download_section(cleaned_data: Any, report_data: Dict,
                 
                 # Provide download
                 st.download_button(
-                    label="📋 Download JSON Report",
+                    label="Download JSON Report",
                     data=report_json,
                     file_name=f"{filename}_report.json",
                     mime="application/json"

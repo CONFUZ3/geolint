@@ -72,7 +72,7 @@ def initialize_session_state():
 
 def render_sidebar():
     """Render the sidebar with mode selection and navigation."""
-    st.sidebar.markdown("# 🗺️ GeoLint")
+    st.sidebar.markdown("# GeoLint")
     st.sidebar.markdown("**Geospatial Data Linting Tool**")
     
     # Mode selection
@@ -107,7 +107,7 @@ def render_sidebar():
     
     **Workflow:**
     1. **Upload & View** - Upload data and see it on the map
-    2. **Change CRS** - Transform coordinates and compare before/after
+    2. **Change CRS** - Transform coordinates 
     3. **AutoFix** - Clean geometries and finalize data
     4. **Download** - Export your processed data
     
@@ -121,7 +121,7 @@ def render_sidebar():
 
 def single_file_mode():
     """Render single file processing mode."""
-    st.markdown("# 📁 Single File Processing")
+    st.markdown("# Single File Processing")
     
     # Progress indicator
     progress_steps = ["Upload & View", "Change CRS", "AutoFix", "Download"]
@@ -139,9 +139,9 @@ def single_file_mode():
     for i, (col, step) in enumerate(zip(progress_cols, progress_steps)):
         with col:
             if i <= current_step:
-                st.markdown(f"✅ **{step}**")
+                st.markdown(f"✓ **{step}**")
             else:
-                st.markdown(f"⏳ {step}")
+                st.markdown(f"- {step}")
     
     st.markdown("---")
     
@@ -149,7 +149,7 @@ def single_file_mode():
     if st.session_state.get('uploaded_files'):
         col1, col2, col3 = st.columns([1, 1, 8])
         with col1:
-            if st.button("🔄 Reset", type="secondary"):
+            if st.button("Reset", type="secondary"):
                 # Clear session state
                 for key in ['uploaded_files', 'validation_reports', 'processed_data', 
                            'original_data', 'transformed_data', 'selected_crs', 
@@ -217,10 +217,10 @@ def single_file_mode():
         
         # Show immediate map visualization after upload
         if st.session_state.processed_data is not None:
-            st.markdown("### 🗺️ Initial Data View")
+            st.markdown("### Initial Data View")
             
             # Create tabs for data exploration
-            explore_tab1, explore_tab2 = st.tabs(["📍 Map View", "📋 Attribute Table"])
+            explore_tab1, explore_tab2 = st.tabs(["Map View", "Attribute Table"])
             
             with explore_tab1:
                 from geolint.web.components import create_map_visualization
@@ -293,7 +293,7 @@ def single_file_mode():
             
             # Apply CRS transformation if selected
             if selected_crs and selected_crs != f"EPSG:{crs_info.get('epsg', '')}":
-                if st.button("🔄 Apply CRS Transformation", type="primary"):
+                if st.button("Apply CRS Transformation", type="primary"):
                     with st.spinner("Transforming data to new CRS..."):
                         try:
                             # Transform the data
@@ -305,7 +305,7 @@ def single_file_mode():
             
             # Show transformation summary if applied
             if st.session_state.get('transformed_data') is not None:
-                st.markdown("### 🔄 CRS Transformation Applied")
+                st.markdown("### CRS Transformation Applied")
                 
                 # Show transformation summary
                 col1, col2 = st.columns(2)
@@ -325,7 +325,7 @@ def single_file_mode():
                     st.write(f"Bounds: {bounds}")
                 
                 # Show bounds comparison
-                st.markdown("#### 📐 Bounds Comparison")
+                st.markdown("#### Bounds Comparison")
                 
                 original_bounds = original_gdf.total_bounds
                 transformed_bounds = st.session_state.transformed_data.total_bounds
@@ -360,7 +360,7 @@ def single_file_mode():
                     preview = get_transform_preview(gdf, selected_crs)
                     
                     if preview.get('preview_available'):
-                        st.markdown("#### 📐 Transformation Preview")
+                        st.markdown("#### Transformation Preview")
                         
                         col1, col2 = st.columns(2)
                         
@@ -398,7 +398,7 @@ def single_file_mode():
             col1, col2 = st.columns(2)
             
             with col1:
-                st.markdown("### 🔧 Geometry Options")
+                st.markdown("### Geometry Options")
                 fix_invalid = st.checkbox("Fix invalid geometries", value=True)
                 remove_empty = st.checkbox("Remove empty geometries", value=True)
                 explode_multipart = st.checkbox("Explode multipart geometries", value=False)
@@ -410,17 +410,17 @@ def single_file_mode():
                     tolerance = 0.001
             
             with col2:
-                st.markdown("### 🗺️ Additional Options")
+                st.markdown("### Additional Options")
                 # Show current data status
                 if st.session_state.get('transformed_data') is not None:
-                    st.success("✅ Data has been transformed to new CRS")
+                    st.success("Data has been transformed to new CRS")
                     st.write(f"Current CRS: {working_data.crs}")
                 else:
-                    st.info("ℹ️ Using original data CRS")
+                    st.info("Using original data CRS")
                     st.write(f"Current CRS: {working_data.crs}")
             
             # AutoFix button
-            if st.button("🚀 Run AutoFix", type="primary", use_container_width=True):
+            if st.button("Run AutoFix", type="primary", use_container_width=True):
                 with st.spinner("Processing dataset..."):
                     try:
                         gdf = working_data.copy()
@@ -461,7 +461,7 @@ def single_file_mode():
                         # Show processing results
                         if st.session_state.get('geometry_report'):
                             geom_report = st.session_state.geometry_report
-                            st.markdown("#### 🔧 Geometry Processing Results")
+                            st.markdown("#### Geometry Processing Results")
                             
                             col1, col2, col3 = st.columns(3)
                             with col1:
@@ -472,7 +472,7 @@ def single_file_mode():
                                 metric_card("Final Count", geom_report.get('final_count', 0))
                         
                         # Show final data summary
-                        st.markdown("#### 📊 Final Data Summary")
+                        st.markdown("#### Final Data Summary")
                         col1, col2, col3 = st.columns(3)
                         with col1:
                             st.metric("Total Features", len(gdf))
@@ -484,7 +484,7 @@ def single_file_mode():
                         
                         # Add visualization button for final processed data
                         st.markdown("#### 🗺️ Visualize Processed Data")
-                        if st.button("📍 Show Final Data on Map", type="primary", use_container_width=True):
+                        if st.button("Show Final Data on Map", type="primary", use_container_width=True):
                             st.session_state.show_final_map = True
                     
                     except Exception as e:
@@ -492,7 +492,7 @@ def single_file_mode():
         
         # Show final map if requested
         if st.session_state.get('show_final_map') and st.session_state.get('final_processed_data') is not None:
-            st.markdown("### 🗺️ Final Processed Data Visualization")
+            st.markdown("### Final Processed Data Visualization")
             
             # Use final processed data if available, otherwise use transformed or original
             final_data = st.session_state.get('final_processed_data')
@@ -505,7 +505,7 @@ def single_file_mode():
             create_map_visualization(final_data)
             
             # Add button to hide the map
-            if st.button("❌ Hide Map", type="secondary"):
+            if st.button("Hide Map", type="secondary"):
                 st.session_state.show_final_map = False
                 st.rerun()
         
@@ -529,7 +529,7 @@ def single_file_mode():
 
 def batch_processing_mode():
     """Render batch processing mode."""
-    st.markdown("# 📦 Batch Processing")
+    st.markdown("# Batch Processing")
     
     # Step 1: Multi-file Upload
     st.markdown("## Step 1: Upload Multiple Files")
@@ -600,7 +600,7 @@ def batch_processing_mode():
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("### 🗺️ CRS Strategy")
+            st.markdown("### CRS Strategy")
             crs_strategy = st.radio(
                 "Choose CRS unification strategy:",
                 ["Keep original CRS for each file", "Use first file's CRS for all", 
@@ -614,7 +614,7 @@ def batch_processing_mode():
                 target_crs = "EPSG:4326"
         
         with col2:
-            st.markdown("### 🔧 Processing Options")
+            st.markdown("### Processing Options")
             unify_crs = st.checkbox("Unify CRS", value=True)
             fix_geometries = st.checkbox("Fix geometries", value=True)
             merge_datasets = st.checkbox("Merge into single file", value=False)
@@ -623,7 +623,7 @@ def batch_processing_mode():
                 st.info("All datasets will be combined into one GeoPackage file")
         
         # Batch processing button
-        if st.button("🚀 Start Batch Processing", type="primary", use_container_width=True):
+        if st.button("Start Batch Processing", type="primary", use_container_width=True):
             with st.spinner("Processing batch..."):
                 try:
                     batch_processor = st.session_state.batch_processor
@@ -656,11 +656,11 @@ def batch_processing_mode():
                         )
                         
                         # Show processing summary
-                        st.markdown("#### 📊 Processing Summary")
+                        st.markdown("#### Processing Summary")
                         
                         for step in results['processing_steps']:
                             step_name = step['step'].replace('_', ' ').title()
-                            status = "✅" if step['success'] else "❌"
+                            status = "✓" if step['success'] else "✗"
                             st.write(f"{status} {step_name}")
                     
                     else:
@@ -737,7 +737,7 @@ def batch_processing_mode():
                 
                 # Provide download
                 st.download_button(
-                    label="📥 Download Merged Dataset",
+                    label="Download Merged Dataset",
                     data=file_data,
                     file_name=f"merged_data{file_extension}",
                     mime=mime_type
@@ -767,7 +767,7 @@ def batch_processing_mode():
                 
                 # Provide download
                 st.download_button(
-                    label="📦 Download All Files as ZIP",
+                    label="Download All Files as ZIP",
                     data=zip_data,
                     file_name="batch_processed_files.zip",
                     mime="application/zip"
@@ -779,7 +779,7 @@ def main():
     # Configure page
     st.set_page_config(
         page_title="GeoLint - Geospatial Data Linting Tool",
-        page_icon="🗺️",
+        page_icon=None,
         layout="wide",
         initial_sidebar_state="expanded"
     )
@@ -804,7 +804,7 @@ def main():
     st.markdown(
         """
         <div style='text-align: center; color: #666;'>
-            <p>GeoLint v0.1.0 | Made with ❤️ for the geospatial community by CONFUZ3</p>
+            <p>GeoLint v0.1.0 | Made with love for the geospatial community by CONFUZ3</p>
         </div>
         """,
         unsafe_allow_html=True
