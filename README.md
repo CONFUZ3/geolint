@@ -53,6 +53,21 @@ streamlit run geolint/web/app.py
 
 Open your browser to `http://localhost:8501`
 
+### Command Line Usage
+
+After installation, you can also use the CLI:
+
+```bash
+# Validate a file and print a summary
+geolint validate path/to/data.gpkg
+
+# Batch process multiple files (unify CRS to EPSG:4326)
+geolint batch path/one.geojson path/two.gpkg --unify-crs --target-crs EPSG:4326 --fix-geometries
+
+# Launch the web UI from the CLI
+geolint web
+```
+
 ## Supported Formats
 
 - **Input**: Shapefile (.zip), GeoPackage (.gpkg), GeoJSON (.geojson)

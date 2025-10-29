@@ -351,7 +351,7 @@ def single_file_mode():
                     area_ratio = transformed_area / original_area
                     change_pct = (area_ratio - 1) * 100
                     change_type = "increase" if change_pct > 0 else "decrease"
-                    st.info(f"Area {change_type}s by {abs(change_pct):.1f}% after transformation")
+                    # Area change info removed
             
             # Bounds preview if CRS selected but not yet applied
             elif selected_crs and crs_info.get('crs'):
@@ -381,7 +381,7 @@ def single_file_mode():
                         if area_ratio != 1.0:
                             change_pct = (area_ratio - 1) * 100
                             change_type = "increase" if change_pct > 0 else "decrease"
-                            st.info(f"Area will {change_type} by {abs(change_pct):.1f}%")
+                            # Area change info removed
                 
                 except Exception as e:
                     warning_message("Could not generate bounds preview", str(e))
