@@ -1,6 +1,6 @@
 # GeoLint
 
-**GeoLint is the spatial equivalent of a code linter and auto-formatter—for maps.**
+**GeoLint is the spatial equivalent of a code linter and auto-formatter for maps.**
 
 A robust, open-source Python toolkit to systematically detect, validate, repair, and standardize geospatial vector datasets with an intuitive web interface.
 
