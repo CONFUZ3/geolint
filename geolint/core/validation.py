@@ -9,7 +9,6 @@ import zipfile
 from pathlib import Path
 from typing import Dict, Tuple, Union
 
-import fiona
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point, Polygon, LineString

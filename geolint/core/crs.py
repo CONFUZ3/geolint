@@ -55,11 +55,10 @@ def infer_crs(gdf: gpd.GeoDataFrame, region_hint: Optional[str] = None) -> List[
     """
     Infer the most likely CRS for a dataset based on its bounds.
     
-    Uses advanced heuristics including:
+    Uses heuristics including:
     - Bounds analysis
-    - Area of use overlap
     - Common CRS likelihood
-    - Geographic vs projected appropriateness
+    - UTM zone detection
     
     Args:
         gdf: GeoDataFrame to analyze
@@ -75,35 +74,8 @@ def infer_crs(gdf: gpd.GeoDataFrame, region_hint: Optional[str] = None) -> List[
     center_lon = (bounds[0] + bounds[2]) / 2
     center_lat = (bounds[1] + bounds[3]) / 2
     
-    suggestions = []
-    
-    # Get all available CRS from pyproj database
-    try:
-        crs_info_list = pyproj.database.query_crs_info()
-        
-        for crs_info in crs_info_list:
-            try:
-                crs = CRS.from_authority(crs_info.auth_name, crs_info.code)
-                confidence = _calculate_crs_confidence(
-                    crs, bounds, center_lon, center_lat, region_hint
-                )
-                
-                if confidence > 0.1:  # Only include suggestions with >10% confidence
-                    suggestions.append({
-                        'epsg': crs_info.code,
-                        'name': crs_info.name,
-                        'confidence': round(confidence, 3),
-                        'type': 'geographic' if crs.is_geographic else 'projected',
-                        'area_of_use': crs_info.area_name or 'Unknown'
-                    })
-                    
-            except Exception:
-                # Skip CRS that can't be created
-                continue
-                
-    except Exception:
-        # Fallback to common CRS if database query fails
-        suggestions = _get_fallback_crs_suggestions(bounds, center_lon, center_lat)
+    # Use fast fallback approach with common CRS only (avoids slow database query)
+    suggestions = _get_fallback_crs_suggestions(bounds, center_lon, center_lat)
     
     # Sort by confidence (highest first) and return top 10
     suggestions.sort(key=lambda x: x['confidence'], reverse=True)
@@ -216,39 +188,141 @@ def _calculate_utm_confidence(epsg: int, center_lon: float, center_lat: float) -
 
 def _get_fallback_crs_suggestions(bounds: Tuple[float, float, float, float], 
                                 center_lon: float, center_lat: float) -> List[Dict]:
-    """Fallback CRS suggestions when database query fails."""
+    """
+    Generate CRS suggestions based on bounds analysis.
+    
+    Uses fast heuristics instead of querying the full CRS database.
+    """
     suggestions = []
+    minx, miny, maxx, maxy = bounds
     
-    # Web Mercator (prioritized for web mapping)
-    suggestions.append({
-        'epsg': 3857,
-        'name': 'WGS 84 / Pseudo-Mercator',
-        'confidence': 0.8,
-        'type': 'projected',
-        'area_of_use': 'World'
-    })
+    # Check if bounds look like geographic coordinates (lat/lon)
+    is_likely_geographic = (
+        -180 <= minx <= 180 and -180 <= maxx <= 180 and
+        -90 <= miny <= 90 and -90 <= maxy <= 90
+    )
     
-    # WGS84 (good fallback)
-    suggestions.append({
-        'epsg': 4326,
-        'name': 'WGS 84',
-        'confidence': 0.7,
-        'type': 'geographic',
-        'area_of_use': 'World'
-    })
+    # Check if bounds look like Web Mercator
+    is_likely_web_mercator = (
+        abs(minx) > 1000 and abs(maxx) > 1000 and
+        -20037508 <= minx <= 20037508 and -20037508 <= maxx <= 20037508
+    )
     
-    # UTM zones
-    utm_zone = int((center_lon + 180) / 6) + 1
-    hemisphere = 'N' if center_lat >= 0 else 'S'
-    utm_epsg = 32600 + utm_zone if hemisphere == 'N' else 32700 + utm_zone
+    # Check if bounds look like UTM (large numbers in meters)
+    is_likely_utm = (
+        abs(minx) > 100000 and abs(maxx) < 1000000 and
+        abs(miny) > 100000 and abs(maxy) < 10000000
+    )
     
-    suggestions.append({
-        'epsg': utm_epsg,
-        'name': f'WGS 84 / UTM zone {utm_zone}{hemisphere}',
-        'confidence': 0.8,
-        'type': 'projected',
-        'area_of_use': f'UTM Zone {utm_zone}{hemisphere}'
-    })
+    if is_likely_web_mercator:
+        # Data is likely already in Web Mercator
+        suggestions.append({
+            'epsg': 3857,
+            'name': 'WGS 84 / Pseudo-Mercator',
+            'confidence': 0.95,
+            'type': 'projected',
+            'area_of_use': 'World (Web Mapping)'
+        })
+        suggestions.append({
+            'epsg': 4326,
+            'name': 'WGS 84',
+            'confidence': 0.3,
+            'type': 'geographic',
+            'area_of_use': 'World'
+        })
+    elif is_likely_geographic:
+        # Data looks like geographic coordinates
+        # WGS84 is most common
+        suggestions.append({
+            'epsg': 4326,
+            'name': 'WGS 84',
+            'confidence': 0.9,
+            'type': 'geographic',
+            'area_of_use': 'World'
+        })
+        
+        # Web Mercator for web mapping
+        suggestions.append({
+            'epsg': 3857,
+            'name': 'WGS 84 / Pseudo-Mercator',
+            'confidence': 0.7,
+            'type': 'projected',
+            'area_of_use': 'World (Web Mapping)'
+        })
+        
+        # Suggest appropriate UTM zone
+        utm_zone = int((center_lon + 180) / 6) + 1
+        utm_zone = max(1, min(60, utm_zone))  # Clamp to valid range
+        hemisphere = 'N' if center_lat >= 0 else 'S'
+        utm_epsg = 32600 + utm_zone if hemisphere == 'N' else 32700 + utm_zone
+        
+        suggestions.append({
+            'epsg': utm_epsg,
+            'name': f'WGS 84 / UTM zone {utm_zone}{hemisphere}',
+            'confidence': 0.75,
+            'type': 'projected',
+            'area_of_use': f'UTM Zone {utm_zone}{hemisphere}'
+        })
+        
+        # Add regional suggestions based on location
+        if -10 <= center_lon <= 40 and 35 <= center_lat <= 72:
+            # Europe
+            suggestions.append({
+                'epsg': 25832,
+                'name': 'ETRS89 / UTM zone 32N',
+                'confidence': 0.6,
+                'type': 'projected',
+                'area_of_use': 'Europe'
+            })
+        elif -130 <= center_lon <= -60 and 24 <= center_lat <= 50:
+            # North America
+            suggestions.append({
+                'epsg': 4269,
+                'name': 'NAD83',
+                'confidence': 0.6,
+                'type': 'geographic',
+                'area_of_use': 'North America'
+            })
+    elif is_likely_utm:
+        # Data looks like UTM coordinates - try to identify the zone
+        # This is tricky without knowing the zone, suggest common ones
+        suggestions.append({
+            'epsg': 32632,
+            'name': 'WGS 84 / UTM zone 32N',
+            'confidence': 0.5,
+            'type': 'projected',
+            'area_of_use': 'UTM Zone 32N'
+        })
+        suggestions.append({
+            'epsg': 32633,
+            'name': 'WGS 84 / UTM zone 33N',
+            'confidence': 0.5,
+            'type': 'projected',
+            'area_of_use': 'UTM Zone 33N'
+        })
+        suggestions.append({
+            'epsg': 4326,
+            'name': 'WGS 84',
+            'confidence': 0.3,
+            'type': 'geographic',
+            'area_of_use': 'World'
+        })
+    else:
+        # Unknown coordinate system - provide general suggestions
+        suggestions.append({
+            'epsg': 4326,
+            'name': 'WGS 84',
+            'confidence': 0.5,
+            'type': 'geographic',
+            'area_of_use': 'World'
+        })
+        suggestions.append({
+            'epsg': 3857,
+            'name': 'WGS 84 / Pseudo-Mercator',
+            'confidence': 0.5,
+            'type': 'projected',
+            'area_of_use': 'World (Web Mapping)'
+        })
     
     return suggestions
 

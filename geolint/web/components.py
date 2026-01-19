@@ -4,12 +4,15 @@ Reusable Streamlit UI components for GeoLint.
 Provides common UI components like metric cards, CRS selectors, and file uploaders.
 """
 
-import streamlit as st
-import pandas as pd
+import hashlib
+import json
 from typing import Dict, List, Optional, Any
-import plotly.express as px
-import plotly.graph_objects as go
+
 import geopandas as gpd
+import pandas as pd
+import streamlit as st
+
+# Note: pydeck is imported lazily inside create_map_visualization for faster startup
 
 
 def metric_card(title: str, value: Any, delta: Optional[str] = None, 
@@ -257,174 +260,300 @@ def file_uploader(accept_types: List[str] = None,
     return uploaded_files if uploaded_files else []
 
 
-def create_map_visualization(gdf: Any) -> None:
+@st.cache_data(show_spinner=False)
+def _reproject_for_map(_gdf_hash: str, gdf_json: str, original_crs: str) -> gpd.GeoDataFrame:
     """
-    Create an interactive map visualization using Folium.
+    Cached reprojection to WGS84 for map display.
+    
+    Args:
+        _gdf_hash: Hash of the GeoDataFrame for cache key
+        gdf_json: GeoJSON string of the GeoDataFrame
+        original_crs: Original CRS string
+        
+    Returns:
+        GeoDataFrame in EPSG:4326
+    """
+    gdf = gpd.read_file(gdf_json, driver='GeoJSON')
+    if original_crs:
+        gdf = gdf.set_crs(original_crs, allow_override=True)
+    if gdf.crs and gdf.crs.to_epsg() != 4326:
+        gdf = gdf.to_crs("EPSG:4326")
+    return gdf
+
+
+def _gdf_to_geojson_features(gdf: gpd.GeoDataFrame) -> List[Dict]:
+    """Convert GeoDataFrame to list of GeoJSON feature dicts."""
+    features = json.loads(gdf.to_json())['features']
+    return features
+
+
+def _compute_viewport(gdf: gpd.GeoDataFrame, pdk_module) -> dict:
+    """Compute PyDeck viewport from GeoDataFrame bounds."""
+    bounds = gdf.total_bounds  # [minx, miny, maxx, maxy]
+    center_lon = (bounds[0] + bounds[2]) / 2
+    center_lat = (bounds[1] + bounds[3]) / 2
+    
+    # Estimate zoom from extent
+    lon_extent = bounds[2] - bounds[0]
+    lat_extent = bounds[3] - bounds[1]
+    max_extent = max(lon_extent, lat_extent)
+    
+    if max_extent <= 0:
+        zoom = 12
+    elif max_extent < 0.01:
+        zoom = 14
+    elif max_extent < 0.1:
+        zoom = 12
+    elif max_extent < 1:
+        zoom = 10
+    elif max_extent < 10:
+        zoom = 6
+    else:
+        zoom = 3
+    
+    return pdk_module.ViewState(
+        latitude=center_lat,
+        longitude=center_lon,
+        zoom=zoom,
+        pitch=0,
+        bearing=0
+    )
+
+
+def create_map_visualization(gdf: Any, key_suffix: str = "") -> None:
+    """
+    Create an interactive map visualization using PyDeck with Carto basemap.
     
     Args:
         gdf: GeoDataFrame to visualize
+        key_suffix: Optional suffix for unique widget keys
     """
     if gdf is None or len(gdf) == 0:
         st.info("No data available for map visualization.")
         return
     
+    # Lazy import pydeck for faster app startup
+    import pydeck as pdk
+    
     try:
-        import folium
-        from streamlit_folium import st_folium
-        
-        # Display CRS information
+        # Handle missing CRS
         if gdf.crs is None:
             st.warning("No CRS information found. Assuming WGS84 (EPSG:4326).")
             gdf = gdf.set_crs("EPSG:4326")
-        else:
-            current_epsg = gdf.crs.to_epsg()
-            crs_name = gdf.crs.name
-            
-            if current_epsg == 4326:
-                st.success("Data in WGS84 (EPSG:4326) - optimal for web mapping")
-            elif current_epsg == 3857:
-                st.success("Data in Web Mercator (EPSG:3857) - optimal for web mapping")
-            else:
-                st.info(f"Data in {crs_name} (EPSG:{current_epsg}) - will be reprojected for web display")
+        
+        current_epsg = gdf.crs.to_epsg() if gdf.crs else None
+        crs_name = gdf.crs.name if gdf.crs else "Unknown"
         
         # Show dataset info
-        st.markdown(f"**Dataset Info:** {len(gdf)} features, CRS: {gdf.crs}")
+        st.markdown(f"**Dataset Info:** {len(gdf)} features, CRS: {crs_name} (EPSG:{current_epsg})")
         bounds = gdf.total_bounds
         st.markdown(f"**Bounds:** X: {bounds[0]:.6f} to {bounds[2]:.6f}, Y: {bounds[1]:.6f} to {bounds[3]:.6f}")
         
-        # Determine if reprojection is needed
-        current_epsg = gdf.crs.to_epsg()
-        web_friendly_crs = [4326, 3857]  # WGS84 and Web Mercator
-        
-        if current_epsg not in web_friendly_crs:
-            st.info("Reprojecting to WGS84 for web visualization...")
+        # Reproject to WGS84 for map display
+        if current_epsg != 4326:
+            st.info(f"Reprojecting from EPSG:{current_epsg} to WGS84 for web visualization...")
             gdf_web = gdf.to_crs("EPSG:4326")
-            use_web_mercator_tiles = False
         else:
-            # Use data as-is for web-friendly CRS
             gdf_web = gdf.copy()
-            if current_epsg == 4326:
-                st.success("Data already in WGS84 - optimal for web mapping")
-                use_web_mercator_tiles = False
-            elif current_epsg == 3857:
-                st.success("Data in Web Mercator - optimal for web mapping")
-                use_web_mercator_tiles = True
         
-        # Calculate map center and zoom based on CRS
-        bounds_web = gdf_web.total_bounds
+        # Geometry type distribution
+        geom_type_counts = gdf_web.geometry.geom_type.value_counts().to_dict()
+        geom_types = list(geom_type_counts.keys())
         
-        if current_epsg == 3857:
-            # For Web Mercator, convert to lat/lon for map center
-            from pyproj import Transformer
-            transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-            center_x = (bounds_web[0] + bounds_web[2]) / 2
-            center_y = (bounds_web[1] + bounds_web[3]) / 2
-            center_lon, center_lat = transformer.transform(center_x, center_y)
-        else:
-            # For WGS84, use coordinates directly
-            center_lat = (bounds_web[1] + bounds_web[3]) / 2
-            center_lon = (bounds_web[0] + bounds_web[2]) / 2
+        # Visualization options
+        st.markdown("#### Visualization Options")
+        vis_col1, vis_col2 = st.columns(2)
         
-        # Create Folium map with appropriate tiles
-        if use_web_mercator_tiles:
-            # Use Web Mercator tiles for EPSG:3857 data
-            m = folium.Map(
-                location=[center_lat, center_lon],
-                zoom_start=10,
-                tiles='OpenStreetMap',
-                crs='EPSG3857'
+        with vis_col1:
+            # Determine which geometry types are available
+            has_points = any(gt in geom_types for gt in ['Point', 'MultiPoint'])
+            has_lines = any(gt in geom_types for gt in ['LineString', 'MultiLineString'])
+            has_polygons = any(gt in geom_types for gt in ['Polygon', 'MultiPolygon'])
+            
+            show_points = st.checkbox(
+                "Show Points", 
+                value=has_points, 
+                disabled=not has_points,
+                key=f"show_points_{key_suffix}"
             )
-        else:
-            # Use standard tiles for WGS84 data
-            m = folium.Map(
-                location=[center_lat, center_lon],
-                zoom_start=10,
-                tiles='OpenStreetMap'
+            show_lines = st.checkbox(
+                "Show Lines", 
+                value=has_lines, 
+                disabled=not has_lines,
+                key=f"show_lines_{key_suffix}"
+            )
+            show_polygons = st.checkbox(
+                "Show Polygons", 
+                value=has_polygons, 
+                disabled=not has_polygons,
+                key=f"show_polygons_{key_suffix}"
+            )
+            show_centroids = st.checkbox(
+                "Show Centroids (for polygons/lines)", 
+                value=False,
+                key=f"show_centroids_{key_suffix}"
             )
         
-        # Handle different geometry types
-        geom_types = gdf_web.geometry.geom_type.unique()
+        with vis_col2:
+            # Sampling options
+            max_features = st.slider(
+                "Max features to display",
+                min_value=100,
+                max_value=10000,
+                value=min(2000, len(gdf_web)),
+                step=100,
+                key=f"max_features_{key_suffix}"
+            )
+            
+            point_radius = st.slider(
+                "Point radius",
+                min_value=10,
+                max_value=500,
+                value=50,
+                step=10,
+                key=f"point_radius_{key_suffix}"
+            )
+            
+            line_width = st.slider(
+                "Line width",
+                min_value=1,
+                max_value=20,
+                value=3,
+                step=1,
+                key=f"line_width_{key_suffix}"
+            )
         
-        if 'Point' in geom_types:
-            # Add point data
-            point_data = gdf_web[gdf_web.geometry.geom_type == 'Point'].copy()
-            
-            # Sample for performance if too many points
-            if len(point_data) > 1000:
-                sample_size = min(1000, len(point_data))
-                step = len(point_data) // sample_size
-                point_data = point_data.iloc[::step]
-                st.info(f"Showing {len(point_data)} of {len(gdf_web[gdf_web.geometry.geom_type == 'Point'])} points for performance.")
-            
-            # Add points to map
-            for idx, row in point_data.iterrows():
-                if current_epsg == 3857:
-                    # For Web Mercator, convert coordinates to lat/lon for Folium
-                    from pyproj import Transformer
-                    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-                    lon, lat = transformer.transform(row.geometry.x, row.geometry.y)
-                else:
-                    # For WGS84, use coordinates directly
-                    lat, lon = row.geometry.y, row.geometry.x
+        # Sample data if needed
+        if len(gdf_web) > max_features:
+            step = len(gdf_web) // max_features
+            gdf_sampled = gdf_web.iloc[::step].head(max_features)
+            st.info(f"Displaying {len(gdf_sampled)} of {len(gdf_web)} features for performance.")
+        else:
+            gdf_sampled = gdf_web
+        
+        # Build layers
+        layers = []
+        
+        # Points layer
+        if show_points and has_points:
+            point_types = ['Point', 'MultiPoint']
+            points_gdf = gdf_sampled[gdf_sampled.geometry.geom_type.isin(point_types)]
+            if len(points_gdf) > 0:
+                # Extract coordinates for ScatterplotLayer
+                point_data = []
+                for idx, row in points_gdf.iterrows():
+                    geom = row.geometry
+                    if geom.geom_type == 'Point':
+                        point_data.append({
+                            'coordinates': [geom.x, geom.y],
+                            'index': idx
+                        })
+                    elif geom.geom_type == 'MultiPoint':
+                        for pt in geom.geoms:
+                            point_data.append({
+                                'coordinates': [pt.x, pt.y],
+                                'index': idx
+                            })
                 
-                folium.CircleMarker(
-                    location=[lat, lon],
-                    radius=3,
-                    popup=f"Feature {idx}",
-                    color='blue',
-                    fill=True
-                ).add_to(m)
+                if point_data:
+                    layers.append(
+                        pdk.Layer(
+                            "ScatterplotLayer",
+                            data=point_data,
+                            get_position="coordinates",
+                            get_radius=point_radius,
+                            get_fill_color=[66, 135, 245, 200],
+                            pickable=True,
+                            auto_highlight=True
+                        )
+                    )
         
-        # Add other geometry types as centroids
-        other_geoms = gdf_web[~gdf_web.geometry.geom_type.isin(['Point'])]
-        if len(other_geoms) > 0:
-            # Sample for performance
-            if len(other_geoms) > 500:
-                sample_size = min(500, len(other_geoms))
-                step = len(other_geoms) // sample_size
-                other_geoms = other_geoms.iloc[::step]
-                st.info(f"Showing centroids of {len(other_geoms)} of {len(gdf_web[~gdf_web.geometry.geom_type.isin(['Point'])])} non-point features for performance.")
-            
-            for idx, row in other_geoms.iterrows():
-                centroid = row.geometry.centroid
-                if current_epsg == 3857:
-                    # For Web Mercator, convert coordinates to lat/lon for Folium
-                    from pyproj import Transformer
-                    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-                    lon, lat = transformer.transform(centroid.x, centroid.y)
-                else:
-                    # For WGS84, use coordinates directly
-                    lat, lon = centroid.y, centroid.x
+        # Lines layer
+        if show_lines and has_lines:
+            line_types = ['LineString', 'MultiLineString']
+            lines_gdf = gdf_sampled[gdf_sampled.geometry.geom_type.isin(line_types)]
+            if len(lines_gdf) > 0:
+                geojson_data = json.loads(lines_gdf.to_json())
+                layers.append(
+                    pdk.Layer(
+                        "GeoJsonLayer",
+                        data=geojson_data,
+                        stroked=True,
+                        filled=False,
+                        get_line_color=[255, 140, 0, 200],
+                        get_line_width=line_width,
+                        line_width_min_pixels=1,
+                        pickable=True,
+                        auto_highlight=True
+                    )
+                )
+        
+        # Polygons layer
+        if show_polygons and has_polygons:
+            polygon_types = ['Polygon', 'MultiPolygon']
+            polygons_gdf = gdf_sampled[gdf_sampled.geometry.geom_type.isin(polygon_types)]
+            if len(polygons_gdf) > 0:
+                geojson_data = json.loads(polygons_gdf.to_json())
+                layers.append(
+                    pdk.Layer(
+                        "GeoJsonLayer",
+                        data=geojson_data,
+                        stroked=True,
+                        filled=True,
+                        get_fill_color=[0, 200, 100, 100],
+                        get_line_color=[0, 100, 50, 200],
+                        get_line_width=2,
+                        line_width_min_pixels=1,
+                        pickable=True,
+                        auto_highlight=True
+                    )
+                )
+        
+        # Centroids layer
+        if show_centroids:
+            non_point_types = ['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon']
+            non_points_gdf = gdf_sampled[gdf_sampled.geometry.geom_type.isin(non_point_types)]
+            if len(non_points_gdf) > 0:
+                centroid_data = []
+                for idx, row in non_points_gdf.iterrows():
+                    centroid = row.geometry.centroid
+                    centroid_data.append({
+                        'coordinates': [centroid.x, centroid.y],
+                        'index': idx,
+                        'geom_type': row.geometry.geom_type
+                    })
                 
-                folium.CircleMarker(
-                    location=[lat, lon],
-                    radius=5,
-                    popup=f"Feature {idx} ({row.geometry.geom_type})",
-                    color='red',
-                    fill=True
-                ).add_to(m)
+                if centroid_data:
+                    layers.append(
+                        pdk.Layer(
+                            "ScatterplotLayer",
+                            data=centroid_data,
+                            get_position="coordinates",
+                            get_radius=point_radius * 1.5,
+                            get_fill_color=[255, 0, 0, 180],
+                            pickable=True,
+                            auto_highlight=True
+                        )
+                    )
         
-        # Add geometry type legend
-        legend_html = '''
-        <div style="position: fixed; 
-                    bottom: 50px; left: 50px; width: 150px; height: 90px; 
-                    background-color: white; border:2px solid grey; z-index:9999; 
-                    font-size:14px; padding: 10px">
-        <p><b>Geometry Types:</b></p>
-        <p><i class="fa fa-circle" style="color:blue"></i> Points</p>
-        <p><i class="fa fa-circle" style="color:red"></i> Other (centroids)</p>
-        </div>
-        '''
-        m.get_root().html.add_child(folium.Element(legend_html))
+        # Compute viewport
+        view_state = _compute_viewport(gdf_sampled, pdk)
         
-        # Display the map with stable key based on data
-        import hashlib
-        data_signature = f"{len(gdf)}_{gdf.crs.to_epsg() if gdf.crs else 'no_crs'}"
-        stable_key = f"map_{hashlib.md5(data_signature.encode()).hexdigest()[:8]}"
-        st_folium(m, width=700, height=500, key=stable_key)
+        # Create deck with basemap
+        # Use pydeck's built-in map style (light theme)
+        deck = pdk.Deck(
+            layers=layers,
+            initial_view_state=view_state,
+            map_style="light",
+            tooltip={"text": "Feature: {index}"}
+        )
+        
+        # Render map with stable key
+        data_signature = f"{len(gdf)}_{current_epsg}_{key_suffix}"
+        stable_key = f"pydeck_{hashlib.md5(data_signature.encode()).hexdigest()[:8]}"
+        st.pydeck_chart(deck, key=stable_key)
         
         # Show geometry type distribution
-        geom_type_counts = gdf.geometry.geom_type.value_counts()
         st.markdown("**Geometry Types:**")
         for geom_type, count in geom_type_counts.items():
             st.write(f"• {geom_type}: {count}")
@@ -440,14 +569,12 @@ def create_map_visualization(gdf: Any) -> None:
         with col3:
             if gdf.crs:
                 epsg_code = gdf.crs.to_epsg()
-                crs_name = gdf.crs.name
-                
                 if epsg_code == 4326:
                     st.metric("CRS", "WGS84 (EPSG:4326)")
                 elif epsg_code == 3857:
                     st.metric("CRS", "Web Mercator (EPSG:3857)")
                 else:
-                    st.metric("CRS", f"{crs_name} (EPSG:{epsg_code})")
+                    st.metric("CRS", f"EPSG:{epsg_code}")
             else:
                 st.metric("CRS", "Unknown")
             

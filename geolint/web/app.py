@@ -4,16 +4,22 @@ GeoLint Streamlit Web Application.
 Main web interface for geospatial data validation, repair, and standardization.
 """
 
+import sys
+from pathlib import Path
+
+# Add project root to path for direct execution (allows running without pip install)
+_project_root = Path(__file__).resolve().parent.parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
+import hashlib
 import io
 import tempfile
-from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 
 # Import core modules
 from geolint.core import (
@@ -28,16 +34,181 @@ from geolint.web.components import (
     metric_card, status_badge, crs_selector, file_uploader,
     validation_dashboard, batch_queue_display, progress_bar,
     error_message, success_message, warning_message, info_message,
-    download_section, expandable_section
+    download_section, expandable_section, create_map_visualization
 )
+
+
+def _compute_file_hash(file_bytes: bytes) -> str:
+    """Compute MD5 hash of file bytes for caching."""
+    return hashlib.md5(file_bytes).hexdigest()
+
+
+def _check_bounds_sanity(gdf: gpd.GeoDataFrame) -> Dict[str, Any]:
+    """
+    Check if dataset bounds are within expected geographic ranges.
+    
+    Returns:
+        Dictionary with sanity check results:
+        - is_sane: True if bounds look like valid lat/lon
+        - issue: Description of the issue if not sane
+        - bounds: The actual bounds
+        - likely_projected: True if bounds suggest projected CRS
+    """
+    bounds = gdf.total_bounds  # [minx, miny, maxx, maxy]
+    
+    result = {
+        'is_sane': True,
+        'issue': None,
+        'bounds': bounds.tolist(),
+        'likely_projected': False,
+        'suggested_action': None
+    }
+    
+    minx, miny, maxx, maxy = bounds
+    
+    # Check for valid lat/lon ranges
+    valid_lon_range = -180 <= minx <= 180 and -180 <= maxx <= 180
+    valid_lat_range = -90 <= miny <= 90 and -90 <= maxy <= 90
+    
+    if valid_lon_range and valid_lat_range:
+        # Bounds look like geographic coordinates
+        result['is_sane'] = True
+        return result
+    
+    # Bounds are outside geographic ranges - likely projected
+    result['is_sane'] = False
+    result['likely_projected'] = True
+    
+    # Try to identify the projection type based on bounds
+    if abs(minx) > 1e6 or abs(maxx) > 1e6 or abs(miny) > 1e6 or abs(maxy) > 1e6:
+        # Very large numbers - likely meters (UTM, Web Mercator, etc.)
+        if -20037508 <= minx <= 20037508 and -20037508 <= maxx <= 20037508:
+            result['issue'] = "Bounds suggest Web Mercator (EPSG:3857) projection"
+            result['suggested_crs'] = "EPSG:3857"
+        else:
+            result['issue'] = "Bounds suggest a projected CRS with large coordinates (possibly UTM or local)"
+            result['suggested_crs'] = None
+    elif abs(minx) > 180 or abs(maxx) > 180 or abs(miny) > 90 or abs(maxy) > 90:
+        result['issue'] = "Bounds are outside geographic coordinate ranges"
+        result['suggested_crs'] = None
+    
+    result['suggested_action'] = "Assign or verify the correct CRS before visualization"
+    
+    return result
+
+
+def _render_crs_sanity_ui(gdf: gpd.GeoDataFrame, sanity_result: Dict[str, Any]) -> Optional[gpd.GeoDataFrame]:
+    """
+    Render UI for CRS sanity issues and allow user to assign CRS.
+    
+    Returns:
+        Modified GeoDataFrame with assigned CRS, or None if no change
+    """
+    st.warning("**CRS Issue Detected**")
+    st.markdown(f"**Problem:** {sanity_result['issue']}")
+    st.markdown(f"**Bounds:** X: {sanity_result['bounds'][0]:.2f} to {sanity_result['bounds'][2]:.2f}, "
+                f"Y: {sanity_result['bounds'][1]:.2f} to {sanity_result['bounds'][3]:.2f}")
+    
+    if sanity_result.get('suggested_action'):
+        st.info(f"**Suggested Action:** {sanity_result['suggested_action']}")
+    
+    # CRS assignment options
+    st.markdown("### Assign CRS to Data")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Common projected CRS options
+        crs_options = {
+            "Web Mercator (EPSG:3857)": "EPSG:3857",
+            "WGS84 (EPSG:4326)": "EPSG:4326",
+            "UTM Zone 32N (EPSG:32632)": "EPSG:32632",
+            "UTM Zone 33N (EPSG:32633)": "EPSG:32633",
+            "NAD83 / UTM Zone 10N (EPSG:26910)": "EPSG:26910",
+            "NAD83 / UTM Zone 11N (EPSG:26911)": "EPSG:26911",
+            "ETRS89 / UTM Zone 32N (EPSG:25832)": "EPSG:25832",
+            "Custom EPSG Code": "custom"
+        }
+        
+        # Pre-select suggested CRS if available
+        default_idx = 0
+        if sanity_result.get('suggested_crs'):
+            for i, (name, code) in enumerate(crs_options.items()):
+                if code == sanity_result['suggested_crs']:
+                    default_idx = i
+                    break
+        
+        selected_option = st.selectbox(
+            "Select CRS to assign:",
+            options=list(crs_options.keys()),
+            index=default_idx,
+            key="crs_assign_select"
+        )
+        
+        selected_crs = crs_options[selected_option]
+        
+        if selected_crs == "custom":
+            custom_epsg = st.text_input(
+                "Enter EPSG code:",
+                placeholder="EPSG:4326",
+                key="custom_epsg_input"
+            )
+            if custom_epsg:
+                selected_crs = custom_epsg
+    
+    with col2:
+        # Try to infer CRS from bounds
+        st.markdown("**CRS Inference**")
+        if st.button("Auto-detect CRS", key="auto_detect_crs"):
+            try:
+                suggestions = infer_crs(gdf)
+                if suggestions:
+                    st.markdown("**Suggested CRS based on bounds:**")
+                    for i, suggestion in enumerate(suggestions[:3]):
+                        confidence_pct = suggestion['confidence'] * 100
+                        st.write(f"• EPSG:{suggestion['epsg']} - {suggestion['name']} ({confidence_pct:.0f}% confidence)")
+                else:
+                    st.info("Could not infer CRS from bounds")
+            except Exception as e:
+                st.error(f"CRS inference failed: {str(e)}")
+    
+    # Apply CRS assignment
+    if st.button("Assign CRS", type="primary", key="assign_crs_btn"):
+        if selected_crs and selected_crs != "custom":
+            try:
+                # Assign CRS without reprojecting (set_crs)
+                gdf_with_crs = gdf.set_crs(selected_crs, allow_override=True)
+                success_message(f"CRS assigned: {selected_crs}")
+                return gdf_with_crs
+            except Exception as e:
+                error_message("Failed to assign CRS", str(e))
+        else:
+            warning_message("Please select a valid CRS")
+    
+    return None
+
+
+@st.cache_resource
+def _load_css_content():
+    """Cache CSS content to avoid repeated file reads."""
+    css_file = Path(__file__).parent / "styles.css"
+    if css_file.exists():
+        with open(css_file, 'r') as f:
+            return f.read()
+    return ""
 
 
 def load_custom_css():
     """Load custom CSS styles."""
-    css_file = Path(__file__).parent / "styles.css"
-    if css_file.exists():
-        with open(css_file, 'r') as f:
-            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    css_content = _load_css_content()
+    if css_content:
+        st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
+
+
+@st.cache_resource
+def _get_batch_processor():
+    """Cache the BatchProcessor instance for better performance."""
+    return BatchProcessor()
 
 
 def initialize_session_state():
@@ -47,6 +218,9 @@ def initialize_session_state():
     
     if 'uploaded_files' not in st.session_state:
         st.session_state.uploaded_files = []
+    
+    if 'uploaded_file_hash' not in st.session_state:
+        st.session_state.uploaded_file_hash = None
     
     if 'validation_reports' not in st.session_state:
         st.session_state.validation_reports = []
@@ -64,10 +238,16 @@ def initialize_session_state():
         st.session_state.selected_crs = None
     
     if 'batch_processor' not in st.session_state:
-        st.session_state.batch_processor = BatchProcessor()
+        st.session_state.batch_processor = _get_batch_processor()
     
     if 'show_final_map' not in st.session_state:
         st.session_state.show_final_map = False
+    
+    if 'crs_sanity_result' not in st.session_state:
+        st.session_state.crs_sanity_result = None
+    
+    if 'crs_assigned' not in st.session_state:
+        st.session_state.crs_assigned = False
 
 
 def render_sidebar():
@@ -151,10 +331,11 @@ def single_file_mode():
         with col1:
             if st.button("Reset", type="secondary"):
                 # Clear session state
-                for key in ['uploaded_files', 'validation_reports', 'processed_data', 
-                           'original_data', 'transformed_data', 'selected_crs', 
-                           'final_processed_data', 'final_report', 'geometry_report', 
-                           'show_final_map']:
+                for key in ['uploaded_files', 'uploaded_file_hash', 'validation_reports', 
+                           'processed_data', 'original_data', 'transformed_data', 
+                           'selected_crs', 'final_processed_data', 'final_report', 
+                           'geometry_report', 'show_final_map', 'crs_sanity_result',
+                           'crs_assigned']:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()
@@ -169,51 +350,93 @@ def single_file_mode():
     )
     
     if uploaded_files:
-        st.session_state.uploaded_files = uploaded_files
+        # Compute file hash to detect changes
+        file_bytes = uploaded_files[0].getvalue()
+        current_hash = _compute_file_hash(file_bytes)
         
-        # Process the uploaded file
-        with st.spinner("Loading and validating dataset..."):
-            try:
-                # Save uploaded file to temporary location
-                with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_files[0].name).suffix) as tmp_file:
-                    tmp_file.write(uploaded_files[0].getvalue())
-                    tmp_path = Path(tmp_file.name)
-                
-                # Run validation
-                validation_report, gdf = run_validation(tmp_path)
-                
-                # Store in session state
-                st.session_state.validation_reports = [validation_report]
-                st.session_state.processed_data = gdf
-                st.session_state.original_data = gdf.copy()  # Keep original for comparison
-                
-                # Display success message with validation summary
-                validation_report = st.session_state.validation_reports[0]
-                geom_validation = validation_report.get('geometry_validation', {})
-                crs_present = validation_report.get('validation', {}).get('crs_present', False)
-                
-                # Build validation summary
-                summary_parts = [f"Found {len(gdf)} features"]
-                
-                if geom_validation.get('invalid_count', 0) > 0:
-                    summary_parts.append(f"{geom_validation['invalid_count']} invalid geometries")
-                
-                if geom_validation.get('empty_count', 0) > 0:
-                    summary_parts.append(f"{geom_validation['empty_count']} empty geometries")
-                
-                if not crs_present:
-                    summary_parts.append("No CRS information")
-                
-                summary_text = ", ".join(summary_parts)
-                
-                success_message(
-                    "File uploaded and validated successfully!",
-                    summary_text
-                )
-                
-            except Exception as e:
-                error_message("Failed to process uploaded file", str(e))
-                return
+        # Only reprocess if file has changed
+        needs_processing = (
+            st.session_state.uploaded_file_hash != current_hash or
+            st.session_state.processed_data is None
+        )
+        
+        if needs_processing:
+            st.session_state.uploaded_files = uploaded_files
+            st.session_state.uploaded_file_hash = current_hash
+            st.session_state.crs_assigned = False
+            st.session_state.crs_sanity_result = None
+            
+            # Process the uploaded file
+            with st.spinner("Loading and validating dataset..."):
+                try:
+                    # Save uploaded file to temporary location
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uploaded_files[0].name).suffix) as tmp_file:
+                        tmp_file.write(file_bytes)
+                        tmp_path = Path(tmp_file.name)
+                    
+                    # Run validation
+                    validation_report, gdf = run_validation(tmp_path)
+                    
+                    # Store in session state
+                    st.session_state.validation_reports = [validation_report]
+                    st.session_state.processed_data = gdf
+                    st.session_state.original_data = gdf.copy()  # Keep original for comparison
+                    
+                    # Check CRS sanity
+                    crs_present = validation_report.get('validation', {}).get('crs_present', False)
+                    
+                    if not crs_present or gdf.crs is None:
+                        # No CRS - check bounds to suggest one
+                        sanity_result = _check_bounds_sanity(gdf)
+                        sanity_result['issue'] = "No CRS information found in the dataset"
+                        sanity_result['is_sane'] = False
+                        st.session_state.crs_sanity_result = sanity_result
+                    else:
+                        # Has CRS - check if bounds make sense
+                        sanity_result = _check_bounds_sanity(gdf)
+                        if not sanity_result['is_sane']:
+                            st.session_state.crs_sanity_result = sanity_result
+                        else:
+                            st.session_state.crs_sanity_result = None
+                    
+                    # Display success message with validation summary
+                    geom_validation = validation_report.get('geometry_validation', {})
+                    
+                    # Build validation summary
+                    summary_parts = [f"Found {len(gdf)} features"]
+                    
+                    if geom_validation.get('invalid_count', 0) > 0:
+                        summary_parts.append(f"{geom_validation['invalid_count']} invalid geometries")
+                    
+                    if geom_validation.get('empty_count', 0) > 0:
+                        summary_parts.append(f"{geom_validation['empty_count']} empty geometries")
+                    
+                    if not crs_present:
+                        summary_parts.append("No CRS information")
+                    
+                    summary_text = ", ".join(summary_parts)
+                    
+                    success_message(
+                        "File uploaded and validated successfully!",
+                        summary_text
+                    )
+                    
+                except Exception as e:
+                    error_message("Failed to process uploaded file", str(e))
+                    return
+        
+        # Show CRS sanity warning and assignment UI if needed
+        if st.session_state.crs_sanity_result and not st.session_state.crs_assigned:
+            updated_gdf = _render_crs_sanity_ui(
+                st.session_state.processed_data,
+                st.session_state.crs_sanity_result
+            )
+            if updated_gdf is not None:
+                st.session_state.processed_data = updated_gdf
+                st.session_state.original_data = updated_gdf.copy()
+                st.session_state.crs_assigned = True
+                st.session_state.crs_sanity_result = None
+                st.rerun()
         
         # Show immediate map visualization after upload
         if st.session_state.processed_data is not None:
@@ -223,8 +446,7 @@ def single_file_mode():
             explore_tab1, explore_tab2 = st.tabs(["Map View", "Attribute Table"])
             
             with explore_tab1:
-                from geolint.web.components import create_map_visualization
-                create_map_visualization(st.session_state.processed_data)
+                create_map_visualization(st.session_state.processed_data, key_suffix="initial")
             
             with explore_tab2:
                 st.markdown("**Attribute Table**")
@@ -501,8 +723,7 @@ def single_file_mode():
             if final_data is None:
                 final_data = st.session_state.processed_data
             
-            from geolint.web.components import create_map_visualization
-            create_map_visualization(final_data)
+            create_map_visualization(final_data, key_suffix="final")
             
             # Add button to hide the map
             if st.button("Hide Map", type="secondary"):
