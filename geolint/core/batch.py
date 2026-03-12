@@ -217,7 +217,7 @@ class BatchProcessor:
                     gdf,
                     fix_invalid=fix_invalid,
                     remove_empty=remove_empty,
-                    explode_multipart=explode_multipart,
+                    do_explode_multipart=explode_multipart,
                     simplify=simplify,
                     simplify_tolerance=simplify_tolerance
                 )
@@ -263,12 +263,21 @@ class BatchProcessor:
         Merge all datasets into a single GeoDataFrame.
         
         Args:
-            merge_strategy: Strategy for merging ("union", "intersection")
+            merge_strategy: Strategy for merging. Only "union" is supported (concatenates
+                all features). "intersection" is not implemented.
             source_tracking: Whether to add source dataset information
             
         Returns:
             Tuple of (merged_geodataframe, merge_report)
+            
+        Raises:
+            ValueError: If merge_strategy is not "union".
         """
+        if merge_strategy != "union":
+            raise ValueError(
+                f"merge_strategy must be 'union'. Got '{merge_strategy}'. "
+                "Intersection merge is not implemented."
+            )
         if not self.datasets:
             return gpd.GeoDataFrame(), {'merged_datasets': 0, 'total_features': 0, 'sources': []}
         
@@ -302,7 +311,7 @@ class BatchProcessor:
         if len(merged_gdfs) == 1:
             merged_gdf = merged_gdfs[0]
         else:
-            merged_gdf = gpd.pd.concat(merged_gdfs, ignore_index=True)
+            merged_gdf = pd.concat(merged_gdfs, ignore_index=True)
         
         # Ensure it's a GeoDataFrame
         if not isinstance(merged_gdf, gpd.GeoDataFrame):

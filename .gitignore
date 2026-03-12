@@ -161,6 +161,11 @@ cython_debug/
 # VS Code
 .vscode/
 
+# Cursor IDE
+.cursor/
+.cursorrules
+*.cursorrules
+
 # GeoLint specific
 temp/
 cache/

@@ -11,7 +11,6 @@ from typing import Dict, Tuple, Union
 
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import Point, Polygon, LineString
 
 
 def load_dataset(path: Union[str, Path]) -> gpd.GeoDataFrame:
@@ -83,11 +82,11 @@ def check_shapefile_bundle(zip_path: Path) -> Dict[str, Union[bool, str]]:
     Returns:
         Dictionary with bundle information:
         - has_shp: bool
-        - has_shx: bool  
+        - has_shx: bool
         - has_dbf: bool
         - has_prj: bool
         - is_complete: bool
-        - missing_files: list of missing files
+        - missing_files: list of missing required extensions (e.g. ['.shx', '.dbf'])
     """
     result = {
         'has_shp': False,
@@ -135,6 +134,7 @@ def validate_geometries(gdf: gpd.GeoDataFrame) -> Dict[str, Union[int, bool, lis
         - valid_count: int
         - invalid_count: int
         - empty_count: int
+        - null_count: int (geometries that are None)
         - mixed_types: bool
         - geometry_types: list of unique geometry types
         - multipart_count: int
@@ -146,31 +146,37 @@ def validate_geometries(gdf: gpd.GeoDataFrame) -> Dict[str, Union[int, bool, lis
             'valid_count': 0,
             'invalid_count': 0,
             'empty_count': 0,
+            'null_count': 0,
             'mixed_types': False,
             'geometry_types': [],
             'multipart_count': 0,
             'invalid_indices': []
         }
-    
+
+    # Safe handling of None geometries (GeoPandas/Shapely can raise on None)
+    null_mask = gdf.geometry.isna()
+    valid_mask = gdf.geometry.apply(lambda g: g.is_valid if g is not None else False)
+    empty_mask = gdf.geometry.apply(lambda g: g.is_empty if g is not None else True)
+
     # Basic counts
     total_features = len(gdf)
-    valid_mask = gdf.geometry.is_valid
+    null_count = int(null_mask.sum())
     valid_count = int(valid_mask.sum())
     invalid_count = total_features - valid_count
-    
-    # Empty geometries
-    empty_mask = gdf.geometry.is_empty
+
+    # Empty geometries (include None as empty for count)
     empty_count = int(empty_mask.sum())
-    
-    # Geometry types
-    geometry_types = gdf.geom_type.unique().tolist()
+
+    # Geometry types (skip None)
+    geom_types_series = gdf.geometry.apply(lambda g: getattr(g, 'geom_type', None) if g is not None else None)
+    geometry_types = geom_types_series.dropna().unique().tolist()
     mixed_types = len(geometry_types) > 1
-    
+
     # Multipart geometries
-    multipart_mask = gdf.geom_type.str.startswith('Multi')
+    multipart_mask = geom_types_series.apply(lambda t: str(t).startswith('Multi') if t else False)
     multipart_count = int(multipart_mask.sum())
-    
-    # Invalid geometry indices
+
+    # Invalid geometry indices (invalid or null)
     invalid_indices = gdf[~valid_mask].index.tolist()
     
     return {
@@ -178,6 +184,7 @@ def validate_geometries(gdf: gpd.GeoDataFrame) -> Dict[str, Union[int, bool, lis
         'valid_count': valid_count,
         'invalid_count': invalid_count,
         'empty_count': empty_count,
+        'null_count': null_count,
         'mixed_types': mixed_types,
         'geometry_types': geometry_types,
         'multipart_count': multipart_count,
@@ -239,6 +246,9 @@ def run_validation(path: Union[str, Path]) -> Tuple[Dict, gpd.GeoDataFrame]:
         
         if geom_validation['empty_count'] > 0:
             report['warnings'].append(f"Found {geom_validation['empty_count']} empty geometries")
+
+        if geom_validation.get('null_count', 0) > 0:
+            report['warnings'].append(f"Found {geom_validation['null_count']} null geometries")
         
         if geom_validation['mixed_types']:
             report['warnings'].append(f"Mixed geometry types detected: {geom_validation['geometry_types']}")
@@ -250,15 +260,17 @@ def run_validation(path: Union[str, Path]) -> Tuple[Dict, gpd.GeoDataFrame]:
         has_issues = (
             geom_validation['invalid_count'] > 0 or
             geom_validation['empty_count'] > 0 or
+            geom_validation.get('null_count', 0) > 0 or
             gdf.crs is None
         )
         report['validation']['has_issues'] = has_issues
         report['validation']['status'] = 'issues_found' if has_issues else 'clean'
         
-    except Exception as e:
+    except (FileNotFoundError, ValueError, OSError) as e:
         report['validation']['loaded_successfully'] = False
         report['errors'].append(f"Failed to load dataset: {str(e)}")
         report['validation']['status'] = 'error'
         gdf = gpd.GeoDataFrame()  # Return empty GeoDataFrame on error
-    
+    # Let unexpected exceptions (e.g. AttributeError, TypeError) propagate
+
     return report, gdf

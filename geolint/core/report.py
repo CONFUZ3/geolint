@@ -7,17 +7,22 @@ Handles JSON report creation, batch report aggregation, and display formatting.
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Union, Any
+from typing import Dict, List, Optional, Union, Any
 
 import pandas as pd
+
+try:
+    from geolint import __version__ as GEOLINT_VERSION
+except ImportError:
+    GEOLINT_VERSION = "0.1.0"
 
 
 def generate_report(
     validation_report: Dict,
-    crs_info: Dict = None,
-    geometry_report: Dict = None,
-    transform_report: Dict = None,
-    processing_options: Dict = None
+    crs_info: Optional[Dict] = None,
+    geometry_report: Optional[Dict] = None,
+    transform_report: Optional[Dict] = None,
+    processing_options: Optional[Dict] = None
 ) -> Dict[str, Any]:
     """
     Generate a comprehensive JSON report for a single dataset.
@@ -33,7 +38,7 @@ def generate_report(
         Comprehensive JSON report
     """
     report = {
-        'geolint_version': '1.0.0',
+        'geolint_version': GEOLINT_VERSION,
         'timestamp': datetime.now().isoformat(),
         'processing_summary': {
             'status': 'completed',
@@ -78,7 +83,7 @@ def generate_report(
 
 def generate_batch_report(
     batch_results: Dict,
-    individual_reports: List[Dict] = None
+    individual_reports: Optional[List[Dict]] = None
 ) -> Dict[str, Any]:
     """
     Generate an aggregate report for batch processing.
@@ -91,7 +96,7 @@ def generate_batch_report(
         Comprehensive batch report
     """
     report = {
-        'geolint_version': '1.0.0',
+        'geolint_version': GEOLINT_VERSION,
         'timestamp': datetime.now().isoformat(),
         'batch_summary': {
             'total_datasets': batch_results.get('total_datasets', 0),
@@ -166,8 +171,8 @@ def _calculate_health_score(report: Dict) -> float:
 
 
 def _calculate_aggregate_statistics(
-    batch_results: Dict, 
-    individual_reports: List[Dict] = None
+    batch_results: Dict,
+    individual_reports: Optional[List[Dict]] = None
 ) -> Dict[str, Any]:
     """
     Calculate aggregate statistics for batch processing.
@@ -353,7 +358,7 @@ def create_summary_report(reports: List[Dict]) -> Dict[str, Any]:
             crs_distribution[epsg] = crs_distribution.get(epsg, 0) + 1
     
     return {
-        'geolint_version': '1.0.0',
+        'geolint_version': GEOLINT_VERSION,
         'timestamp': datetime.now().isoformat(),
         'summary': {
             'total_files': total_files,

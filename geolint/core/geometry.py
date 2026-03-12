@@ -4,7 +4,7 @@ Geometry repair and processing functions.
 Handles geometry validation, fixing, and optimization operations.
 """
 
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
 import geopandas as gpd
 import pandas as pd
@@ -213,10 +213,10 @@ def process_geometries(
     gdf: gpd.GeoDataFrame,
     fix_invalid: bool = True,
     remove_empty: bool = True,
-    explode_multipart: bool = False,
+    do_explode_multipart: bool = False,
     simplify: bool = False,
     simplify_tolerance: float = 0.001
-) -> Tuple[gpd.GeoDataFrame, Dict[str, any]]:
+) -> Tuple[gpd.GeoDataFrame, Dict[str, Any]]:
     """
     Comprehensive geometry processing pipeline.
     
@@ -224,7 +224,7 @@ def process_geometries(
         gdf: GeoDataFrame to process
         fix_invalid: Whether to fix invalid geometries
         remove_empty: Whether to remove empty geometries
-        explode_multipart: Whether to explode multipart geometries
+        do_explode_multipart: Whether to explode multipart geometries
         simplify: Whether to simplify geometries
         simplify_tolerance: Simplification tolerance
         
@@ -258,7 +258,7 @@ def process_geometries(
         total_removed += empty_report['geometries_removed']
     
     # Step 3: Explode multipart geometries
-    if explode_multipart:
+    if do_explode_multipart:
         processed_gdf, explode_report = explode_multipart(processed_gdf)
         operations.append({
             'operation': 'explode_multipart',

@@ -139,7 +139,30 @@ class TestValidateGeometries:
         assert result['valid_count'] == 0
         assert result['invalid_count'] == 0
         assert result['empty_count'] == 0
+        assert result.get('null_count', 0) == 0
         assert result['geometry_types'] == []
+
+    def test_validate_geometries_with_none(self):
+        """Test validating a GeoDataFrame that contains None geometries."""
+        from shapely.geometry import Point
+
+        data = {
+            'id': [1, 2, 3],
+            'name': ['A', 'B', 'C'],
+            'geometry': [
+                Point(0, 0),
+                None,
+                Point(2, 2)
+            ]
+        }
+        gdf = gpd.GeoDataFrame(data, crs='EPSG:4326')
+        result = validate_geometries(gdf)
+
+        assert result['total_features'] == 3
+        assert result['null_count'] == 1
+        assert result['valid_count'] == 2
+        assert result['invalid_count'] == 1
+        assert 1 in result['invalid_indices']
 
 
 class TestRunValidation:
@@ -184,6 +207,23 @@ class TestRunValidation:
         # Cleanup
         gpkg_path.unlink(missing_ok=True)
     
+    def test_run_validation_report_contract(self, sample_geopackage):
+        """Contract test: run_validation report has required keys and types."""
+        report, gdf = run_validation(sample_geopackage)
+        required_keys = [
+            'file_path', 'file_name', 'file_size', 'timestamp',
+            'validation', 'shapefile_bundle', 'geometry_validation',
+            'warnings', 'errors'
+        ]
+        for key in required_keys:
+            assert key in report, f"Missing report key: {key}"
+        assert isinstance(report['validation'], dict)
+        assert isinstance(report['warnings'], list)
+        assert isinstance(report['errors'], list)
+        assert 'loaded_successfully' in report['validation']
+        assert 'status' in report['validation']
+        assert 'total_features' in report['geometry_validation']
+
     def test_validate_nonexistent_file(self):
         """Test validating a non-existent file."""
         report, gdf = run_validation(Path("nonexistent.shp"))

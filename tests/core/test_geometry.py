@@ -241,7 +241,7 @@ class TestProcessGeometries:
             sample_invalid_gdf,
             fix_invalid=True,
             remove_empty=True,
-            explode_multipart=False,
+            do_explode_multipart=False,
             simplify=True,
             simplify_tolerance=0.01
         )
@@ -265,7 +265,7 @@ class TestProcessGeometries:
             sample_point_gdf,
             fix_invalid=False,
             remove_empty=False,
-            explode_multipart=False,
+            do_explode_multipart=False,
             simplify=False
         )
         
@@ -281,7 +281,7 @@ class TestProcessGeometries:
             sample_empty_gdf,
             fix_invalid=True,
             remove_empty=True,
-            explode_multipart=True,
+            do_explode_multipart=True,
             simplify=True
         )
         
@@ -297,7 +297,7 @@ class TestProcessGeometries:
             sample_invalid_gdf,
             fix_invalid=True,
             remove_empty=True,
-            explode_multipart=False,
+            do_explode_multipart=False,
             simplify=False
         )
         
@@ -308,3 +308,32 @@ class TestProcessGeometries:
         assert 'remove_empty' in operation_names
         assert 'explode_multipart' not in operation_names
         assert 'simplify' not in operation_names
+
+    def test_process_geometries_with_explode_multipart_non_empty(self):
+        """Regression: process_geometries with do_explode_multipart=True on non-empty multipart GDF."""
+        from shapely.geometry import MultiPoint, MultiPolygon
+
+        data = {
+            'id': [1, 2],
+            'name': ['MultiPoint', 'MultiPolygon'],
+            'geometry': [
+                MultiPoint([(0, 0), (1, 1)]),
+                MultiPolygon([
+                    Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
+                    Polygon([(2, 2), (3, 2), (3, 3), (2, 3)])
+                ])
+            ]
+        }
+        gdf = gpd.GeoDataFrame(data, crs='EPSG:4326')
+        processed_gdf, report = process_geometries(
+            gdf,
+            fix_invalid=False,
+            remove_empty=False,
+            do_explode_multipart=True,
+            simplify=False
+        )
+        assert isinstance(processed_gdf, gpd.GeoDataFrame)
+        assert len(processed_gdf) > len(gdf)
+        assert 'operations' in report
+        op_names = [op['operation'] for op in report['operations']]
+        assert 'explode_multipart' in op_names

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 
+from geolint import __version__ as GEOLINT_VERSION
 from geolint.core.report import (
     generate_report, generate_batch_report, format_report_for_display,
     save_report, load_report, create_summary_report
@@ -28,7 +29,7 @@ class TestGenerateReport:
         assert 'validation' in report
         assert 'health_score' in report
         
-        assert report['geolint_version'] == '1.0.0'
+        assert report['geolint_version'] == GEOLINT_VERSION
         assert report['processing_summary']['status'] == 'completed'
         assert report['health_score'] >= 0
         assert report['health_score'] <= 100
@@ -67,6 +68,23 @@ class TestGenerateReport:
         assert 'processing_options' in report
         assert report['processing_options'] == processing_options
     
+    def test_generate_report_contract(self, sample_validation_report):
+        """Contract test: generate_report output has required keys and value types."""
+        report = generate_report(sample_validation_report)
+        required_keys = [
+            'geolint_version', 'timestamp', 'processing_summary', 'file_info',
+            'validation', 'shapefile_bundle', 'geometry_validation',
+            'warnings', 'errors', 'health_score'
+        ]
+        for key in required_keys:
+            assert key in report, f"Missing report key: {key}"
+        assert isinstance(report['geolint_version'], str)
+        assert isinstance(report['timestamp'], str)
+        assert isinstance(report['processing_summary'], dict)
+        assert isinstance(report['file_info'], dict)
+        assert isinstance(report['health_score'], (int, float))
+        assert 0 <= report['health_score'] <= 100
+
     def test_generate_report_health_score_calculation(self):
         """Test health score calculation."""
         # Perfect dataset

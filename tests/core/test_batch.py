@@ -158,7 +158,14 @@ class TestBatchProcessor:
         assert len(merged_gdf) == 0
         assert report['merged_datasets'] == 0
         assert report['total_features'] == 0
-    
+
+    def test_merge_datasets_invalid_strategy_raises(self, sample_point_gdf):
+        """Test that merge_strategy other than 'union' raises ValueError."""
+        processor = BatchProcessor()
+        processor.add_dataset(sample_point_gdf, "dataset1")
+        with pytest.raises(ValueError, match="merge_strategy must be 'union'"):
+            processor.merge_datasets(merge_strategy="intersection")
+
     def test_process_batch_complete(self, sample_point_gdf):
         """Test complete batch processing pipeline."""
         processor = BatchProcessor()

@@ -3,7 +3,8 @@ import sys
 from pathlib import Path
 
 from geolint.core.batch import BatchProcessor
-from geolint.core.report import generate_report
+from geolint.core.crs import get_crs_info
+from geolint.core.report import generate_report, save_report
 from geolint.core.validation import run_validation
 
 
@@ -18,7 +19,9 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         print(report)
         if args.report:
             out = Path(args.report)
-            out.write_text(str(report))
+            crs_info = get_crs_info(gdf) if not gdf.empty and gdf.crs is not None else None
+            full_report = generate_report(report, crs_info=crs_info)
+            save_report(full_report, out)
             print(f"Report written to {out}")
         return 0
     except Exception as exc:

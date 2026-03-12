@@ -655,7 +655,7 @@ def single_file_mode():
                                 gdf,
                                 fix_invalid=fix_invalid,
                                 remove_empty=remove_empty,
-                                explode_multipart=explode_multipart,
+                                do_explode_multipart=explode_multipart,
                                 simplify=simplify,
                                 simplify_tolerance=tolerance
                             )
