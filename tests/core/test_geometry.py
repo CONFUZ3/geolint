@@ -4,13 +4,15 @@ Tests for the geometry module.
 
 import pytest
 import geopandas as gpd
-from shapely.geometry import Point, Polygon, LineString
+from shapely.geometry import Point, Polygon, LineString, box
 
 from geolint.core.geometry import (
     fix_geometries, remove_empty_geometries, explode_multipart,
     simplify_geometries, validate_geometry_types, get_geometry_bounds,
-    process_geometries
+    process_geometries, normalize_winding, remove_duplicate_geometries,
+    remove_duplicate_vertices
 )
+from geolint.core.checks import check_winding_order
 
 
 class TestFixGeometries:
@@ -337,3 +339,120 @@ class TestProcessGeometries:
         assert 'operations' in report
         op_names = [op['operation'] for op in report['operations']]
         assert 'explode_multipart' in op_names
+
+
+class TestNormalizeWinding:
+    """Test polygon winding order normalization auto-fix."""
+
+    def test_normalize_winding_reorients_cw(self, sample_wrong_winding_gdf):
+        result_gdf, report = normalize_winding(sample_wrong_winding_gdf)
+
+        assert isinstance(result_gdf, gpd.GeoDataFrame)
+        assert report['polygons_reoriented'] == 1
+        # Re-running the winding check should now report compliance.
+        check = check_winding_order(result_gdf)
+        assert check['non_compliant_count'] == 0
+
+    def test_normalize_winding_already_compliant(self, sample_polygon_gdf):
+        result_gdf, report = normalize_winding(sample_polygon_gdf)
+
+        assert isinstance(result_gdf, gpd.GeoDataFrame)
+        assert report['polygons_reoriented'] == 0
+
+    def test_normalize_winding_empty_gdf(self, sample_empty_gdf):
+        result_gdf, report = normalize_winding(sample_empty_gdf)
+
+        assert isinstance(result_gdf, gpd.GeoDataFrame)
+        assert len(result_gdf) == 0
+        assert report['polygons_reoriented'] == 0
+
+
+class TestRemoveDuplicateGeometries:
+    """Test duplicate geometry removal auto-fix."""
+
+    def test_remove_duplicate_geometries(self, sample_duplicate_geom_gdf):
+        result_gdf, report = remove_duplicate_geometries(sample_duplicate_geom_gdf)
+
+        assert isinstance(result_gdf, gpd.GeoDataFrame)
+        assert report['geometries_removed'] == 1
+        assert report['remaining_count'] == 2
+        assert len(result_gdf) == 2
+
+    def test_remove_duplicate_geometries_none(self, sample_point_gdf):
+        result_gdf, report = remove_duplicate_geometries(sample_point_gdf)
+
+        assert report['geometries_removed'] == 0
+        assert len(result_gdf) == len(sample_point_gdf)
+
+    def test_remove_duplicate_geometries_empty_gdf(self, sample_empty_gdf):
+        result_gdf, report = remove_duplicate_geometries(sample_empty_gdf)
+
+        assert isinstance(result_gdf, gpd.GeoDataFrame)
+        assert len(result_gdf) == 0
+        assert report['geometries_removed'] == 0
+        assert report['remaining_count'] == 0
+
+
+class TestRemoveDuplicateVertices:
+    """Test duplicate/collinear vertex removal auto-fix."""
+
+    def test_remove_duplicate_vertices(self, sample_dup_vertex_gdf):
+        result_gdf, report = remove_duplicate_vertices(sample_dup_vertex_gdf)
+
+        assert isinstance(result_gdf, gpd.GeoDataFrame)
+        assert report['geometries_cleaned'] >= 1
+
+    def test_remove_duplicate_vertices_clean_data(self, sample_point_gdf):
+        result_gdf, report = remove_duplicate_vertices(sample_point_gdf)
+
+        assert isinstance(result_gdf, gpd.GeoDataFrame)
+        assert report['geometries_cleaned'] == 0
+
+    def test_remove_duplicate_vertices_empty_gdf(self, sample_empty_gdf):
+        result_gdf, report = remove_duplicate_vertices(sample_empty_gdf)
+
+        assert isinstance(result_gdf, gpd.GeoDataFrame)
+        assert len(result_gdf) == 0
+        assert report['geometries_cleaned'] == 0
+
+
+class TestProcessGeometriesNewSteps:
+    """Test process_geometries integration of the new auto-fix steps."""
+
+    def test_new_steps_tracked(self, sample_duplicate_geom_gdf):
+        processed_gdf, report = process_geometries(
+            sample_duplicate_geom_gdf,
+            fix_invalid=False,
+            remove_empty=False,
+            remove_duplicates=True,
+            clean_vertices=True,
+            normalize_winding_order=True,
+            do_explode_multipart=False,
+            simplify=False
+        )
+
+        assert 'original_count' in report
+        assert 'final_count' in report
+        assert 'operations' in report
+        op_names = [op['operation'] for op in report['operations']]
+        assert 'remove_duplicates' in op_names
+        assert 'clean_vertices' in op_names
+        assert 'normalize_winding_order' in op_names
+        # The two identical boxes collapse to one.
+        assert report['final_count'] == 2
+
+    def test_default_behavior_unchanged(self, sample_duplicate_geom_gdf):
+        """With the new flags defaulting to False, duplicates are NOT removed."""
+        processed_gdf, report = process_geometries(
+            sample_duplicate_geom_gdf,
+            fix_invalid=True,
+            remove_empty=True,
+            do_explode_multipart=False,
+            simplify=False
+        )
+
+        op_names = [op['operation'] for op in report['operations']]
+        assert 'remove_duplicates' not in op_names
+        assert 'clean_vertices' not in op_names
+        assert 'normalize_winding_order' not in op_names
+        assert report['final_count'] == len(sample_duplicate_geom_gdf)

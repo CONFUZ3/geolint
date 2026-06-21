@@ -161,7 +161,8 @@ def _render_crs_sanity_ui(gdf: gpd.GeoDataFrame, sanity_result: Dict[str, Any]) 
         st.markdown("**CRS Inference**")
         if st.button("Auto-detect CRS", key="auto_detect_crs"):
             try:
-                suggestions = infer_crs(gdf)
+                infer_gdf = gdf.set_crs(None, allow_override=True) if gdf.crs is not None else gdf
+                suggestions = infer_crs(infer_gdf)
                 if suggestions:
                     st.markdown("**Suggested CRS based on bounds:**")
                     for i, suggestion in enumerate(suggestions[:3]):
@@ -488,7 +489,106 @@ def single_file_mode():
                 st.markdown("**Geometry Information:**")
                 geom_types = gdf.geometry.geom_type.value_counts()
                 st.write(geom_types)
-        
+
+            # Data Quality Checks panel (linter-checks layer)
+            def _render_data_quality_checks():
+                checks = (st.session_state.validation_reports[0] or {}).get('checks', {}) if st.session_state.get('validation_reports') else {}
+                topology = checks.get('topology', {}) or {}
+                attributes = checks.get('attributes', {}) or {}
+                coordinates = checks.get('coordinates', {}) or {}
+
+                def _count_status(value):
+                    """Return ('error'/'success', value) for a numeric count, or ('info', 'n/a')."""
+                    if not isinstance(value, int):
+                        return "info", "n/a"
+                    return ("error" if value > 0 else "success"), value
+
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.markdown("#### Topology")
+
+                    dup_geom = topology.get('duplicate_geometries', {}) or {}
+                    if 'error' in dup_geom or 'duplicate_count' not in dup_geom:
+                        metric_card("Duplicate Geometries", "n/a", status="info")
+                    else:
+                        s, v = _count_status(dup_geom.get('duplicate_count'))
+                        metric_card("Duplicate Geometries", v, status=s)
+
+                    overlaps = topology.get('overlapping_polygons', {}) or {}
+                    if 'error' in overlaps:
+                        metric_card("Overlapping Polygons", "n/a", status="info")
+                    elif overlaps.get('skipped'):
+                        metric_card("Overlapping Polygons", "skipped", status="info")
+                    elif 'overlap_pair_count' not in overlaps:
+                        metric_card("Overlapping Polygons", "n/a", status="info")
+                    else:
+                        s, v = _count_status(overlaps.get('overlap_pair_count'))
+                        metric_card("Overlapping Polygons", v, status=s)
+
+                    slivers = topology.get('slivers', {}) or {}
+                    if 'error' in slivers or ('zero_area_polygons' not in slivers and 'zero_length_lines' not in slivers):
+                        metric_card("Slivers / Zero-area", "n/a", status="info")
+                    else:
+                        sliver_count = (slivers.get('zero_area_polygons', 0) or 0) + (slivers.get('zero_length_lines', 0) or 0)
+                        s, v = _count_status(sliver_count)
+                        metric_card("Slivers / Zero-area", v, status=s)
+
+                    dup_verts = topology.get('duplicate_vertices', {}) or {}
+                    if 'error' in dup_verts or 'features_with_duplicate_vertices' not in dup_verts:
+                        metric_card("Duplicate Vertices", "n/a", status="info")
+                    else:
+                        s, v = _count_status(dup_verts.get('features_with_duplicate_vertices'))
+                        metric_card("Duplicate Vertices", v, status=s)
+
+                with col2:
+                    st.markdown("#### Attributes")
+
+                    id_uniq = attributes.get('id_uniqueness', {}) or {}
+                    if 'error' in id_uniq or 'duplicate_count' not in id_uniq:
+                        metric_card("ID Duplicates", "n/a", status="info")
+                    else:
+                        s, v = _count_status(id_uniq.get('duplicate_count'))
+                        metric_card("ID Duplicates", v, status=s)
+
+                    null_attrs = attributes.get('null_attributes', {}) or {}
+                    if 'error' in null_attrs or 'fully_null_columns' not in null_attrs:
+                        metric_card("Fully-null Columns", "n/a", status="info")
+                    else:
+                        s, v = _count_status(len(null_attrs.get('fully_null_columns') or []))
+                        metric_card("Fully-null Columns", v, status=s)
+
+                    field_names = attributes.get('shapefile_field_names', {}) or {}
+                    if 'error' in field_names:
+                        metric_card("Shapefile-unsafe Names", "n/a", status="info")
+                    else:
+                        unsafe_count = (
+                            len(field_names.get('long_names') or [])
+                            + len(field_names.get('truncation_collisions') or [])
+                            + len(field_names.get('non_ascii_names') or [])
+                        )
+                        s, v = _count_status(unsafe_count)
+                        metric_card("Shapefile-unsafe Names", v, status=s)
+
+                with col3:
+                    st.markdown("#### Coordinates")
+
+                    winding = coordinates.get('winding_order', {}) or {}
+                    if 'error' in winding or 'non_compliant_count' not in winding:
+                        metric_card("Wrong Winding", "n/a", status="info")
+                    else:
+                        s, v = _count_status(winding.get('non_compliant_count'))
+                        metric_card("Wrong Winding", v, status=s)
+
+                    coord_range = coordinates.get('coordinate_range', {}) or {}
+                    if 'error' in coord_range or 'out_of_range_count' not in coord_range:
+                        metric_card("Out-of-range Coords", "n/a", status="info")
+                    else:
+                        s, v = _count_status(coord_range.get('out_of_range_count'))
+                        metric_card("Out-of-range Coords", v, status=s)
+
+            expandable_section("Data Quality Checks", _render_data_quality_checks, expanded=False)
+
         # Step 2: CRS Management & Comparison
         st.markdown("## Step 2: Change Coordinate Reference System")
         

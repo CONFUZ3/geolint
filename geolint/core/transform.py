@@ -28,17 +28,10 @@ def reproject_dataset(
     Raises:
         ValueError: If original CRS is missing or transformation fails
     """
-    if gdf.empty:
-        return gdf, {'error': 'Empty dataset', 'transformed': False}
-    
     # Check if original CRS exists
     if gdf.crs is None:
         raise ValueError("Cannot reproject dataset without original CRS information")
-    
-    # Convert target CRS to CRS object if needed
-    if isinstance(target_crs, (str, int)):
-        target_crs = CRS.from_user_input(target_crs)
-    
+
     # Get original bounds
     original_bounds = list(gdf.total_bounds)
     original_crs_info = {
@@ -47,8 +40,12 @@ def reproject_dataset(
         'is_geographic': gdf.crs.is_geographic,
         'is_projected': gdf.crs.is_projected
     }
-    
+
     try:
+        # Convert target CRS to CRS object if needed
+        if isinstance(target_crs, (str, int)):
+            target_crs = CRS.from_user_input(target_crs)
+
         # Perform reprojection
         reprojected_gdf = gdf.to_crs(target_crs)
         
@@ -251,8 +248,8 @@ def detect_common_crs(datasets: List[gpd.GeoDataFrame]) -> Dict[str, Union[str, 
         Dictionary with common CRS information
     """
     if not datasets:
-        return {'common_crs': None, 'confidence': 0.0, 'crs_counts': []}
-    
+        return {'common_crs': None, 'confidence': 0.0, 'total_datasets': 0, 'crs_counts': []}
+
     # Count CRS occurrences
     crs_counts = {}
     crs_details = {}
@@ -269,7 +266,7 @@ def detect_common_crs(datasets: List[gpd.GeoDataFrame]) -> Dict[str, Union[str, 
             }
     
     if not crs_counts:
-        return {'common_crs': None, 'confidence': 0.0, 'crs_counts': []}
+        return {'common_crs': None, 'confidence': 0.0, 'total_datasets': len(datasets), 'crs_counts': []}
     
     # Find most common CRS
     most_common_crs = max(crs_counts, key=crs_counts.get)

@@ -1,4 +1,5 @@
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -15,14 +16,19 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         return 1
     try:
         report, gdf = run_validation(input_path)
-        print("Validation completed.")
-        print(report)
+        crs_info = get_crs_info(gdf) if (not gdf.empty and gdf.crs is not None) else None
+        full_report = generate_report(report, crs_info=crs_info)
+        if args.json:
+            print(json.dumps(full_report, indent=2, default=str))
+        else:
+            print("Validation completed.")
+            print(report)
         if args.report:
             out = Path(args.report)
-            crs_info = get_crs_info(gdf) if not gdf.empty and gdf.crs is not None else None
-            full_report = generate_report(report, crs_info=crs_info)
             save_report(full_report, out)
             print(f"Report written to {out}")
+        if full_report.get("errors") or report.get("validation", {}).get("status") == "error":
+            return 1
         return 0
     except Exception as exc:
         print(f"Validation failed: {exc}")
@@ -76,6 +82,11 @@ def app() -> None:
     p_validate = subparsers.add_parser("validate", help="Validate a geospatial file")
     p_validate.add_argument("input", help="Path to input file (.zip/.gpkg/.geojson)")
     p_validate.add_argument("--report", help="Optional path to write text report")
+    p_validate.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON report to stdout",
+    )
     p_validate.set_defaults(func=_cmd_validate)
 
     p_batch = subparsers.add_parser("batch", help="Batch validate/process multiple files")

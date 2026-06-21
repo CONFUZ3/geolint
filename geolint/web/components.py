@@ -681,7 +681,30 @@ def _calculate_health_score(validation_report: Dict) -> float:
     # Mixed geometry types (-10 points)
     if geometry_validation.get('mixed_types', False):
         score -= 10
-    
+
+    # Linter checks deductions (backward-compatible: no 'checks' key deducts nothing)
+    checks = validation_report.get('checks', {})
+    topo = checks.get('topology', {}) if isinstance(checks.get('topology'), dict) else {}
+    attr = checks.get('attributes', {}) if isinstance(checks.get('attributes'), dict) else {}
+    coord = checks.get('coordinates', {}) if isinstance(checks.get('coordinates'), dict) else {}
+    tf = max(1, validation_report.get('geometry_validation', {}).get('total_features', 0) or 1)
+
+    dup = (topo.get('duplicate_geometries') or {}).get('duplicate_count', 0)
+    if dup:
+        score -= min(15, dup / tf * 100)
+
+    ov = topo.get('overlapping_polygons') or {}
+    if not ov.get('skipped', False) and ov.get('overlap_pair_count', 0):
+        score -= min(15, (ov.get('features_involved', 0) / tf) * 100)
+
+    if (attr.get('id_uniqueness') or {}).get('duplicate_count', 0):
+        score -= 10
+    if (coord.get('winding_order') or {}).get('non_compliant_count', 0):
+        score -= 5
+    cr = coord.get('coordinate_range') or {}
+    if cr.get('applicable', False) and cr.get('out_of_range_count', 0):
+        score -= 15
+
     # Shapefile bundle issues (-10 points)
     shapefile_bundle = validation_report.get('shapefile_bundle', {})
     if not shapefile_bundle.get('is_complete', True):
