@@ -6,7 +6,7 @@ import pytest
 import geopandas as gpd
 import pandas as pd
 import numpy as np
-from shapely.geometry import Point, Polygon, LineString
+from shapely.geometry import Point, Polygon, LineString, box
 from pathlib import Path
 import tempfile
 import zipfile
@@ -82,7 +82,7 @@ def sample_invalid_gdf():
         'name': ['Valid', 'Invalid', 'Empty'],
         'geometry': [
             Point(0, 0),  # Valid
-            Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]),  # Self-intersecting (invalid)
+            Polygon([(0, 0), (1, 1), (1, 0), (0, 1), (0, 0)]),  # Self-intersecting bowtie (invalid)
             Point()  # Empty geometry
         ]
     }
@@ -108,6 +108,125 @@ def sample_no_crs_gdf():
 def sample_empty_gdf():
     """Create an empty GeoDataFrame."""
     return gpd.GeoDataFrame(columns=['id', 'name', 'geometry'], crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_duplicate_geom_gdf():
+    """Two identical box geometries plus one unique geometry."""
+    data = {
+        'id': [1, 2, 3],
+        'geometry': [
+            box(0, 0, 1, 1),
+            box(0, 0, 1, 1),
+            box(5, 5, 6, 6)
+        ]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_overlapping_gdf():
+    """Two polygons that share interior area (true overlap)."""
+    data = {
+        'id': [1, 2],
+        'geometry': [
+            box(0, 0, 2, 2),
+            box(1, 1, 3, 3)
+        ]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_touching_gdf():
+    """Two polygons that share only a boundary (no interior overlap)."""
+    data = {
+        'id': [1, 2],
+        'geometry': [
+            box(0, 0, 1, 1),
+            box(1, 0, 2, 1)
+        ]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_wrong_winding_gdf():
+    """A polygon whose exterior ring is clockwise (RFC 7946 non-compliant)."""
+    data = {
+        'id': [1],
+        'geometry': [
+            Polygon([(0, 0), (0, 1), (1, 1), (1, 0)])  # CW exterior
+        ]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_out_of_range_gdf():
+    """Geographic CRS points including one out-of-range longitude (200)."""
+    data = {
+        'id': [1, 2],
+        'geometry': [
+            Point(10, 5),
+            Point(200, 5)
+        ]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_dup_id_gdf():
+    """Points with a duplicated id value (id=[1, 2, 2, 3])."""
+    data = {
+        'id': [1, 2, 2, 3],
+        'geometry': [
+            Point(0, 0),
+            Point(1, 1),
+            Point(2, 2),
+            Point(3, 3)
+        ]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_long_fieldname_gdf():
+    """GeoDataFrame with a >10-char column and a truncation-collision pair."""
+    data = {
+        'a_very_long_field_name': [1, 2],
+        'description_1': ['a', 'b'],
+        'description_2': ['c', 'd'],
+        'geometry': [Point(0, 0), Point(1, 1)]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_sliver_gdf():
+    """A zero-area polygon and a zero-length line alongside valid geometries."""
+    data = {
+        'id': [1, 2, 3],
+        'geometry': [
+            Polygon([(0, 0), (1, 0), (2, 0), (0, 0)]),  # collinear -> zero area
+            LineString([(5, 5), (5, 5)]),  # zero length
+            box(10, 10, 11, 11)  # valid polygon
+        ]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
+
+
+@pytest.fixture
+def sample_dup_vertex_gdf():
+    """A line with a consecutive duplicate vertex and a clean line."""
+    data = {
+        'id': [1, 2],
+        'geometry': [
+            LineString([(0, 0), (0, 0), (1, 1)]),  # duplicate vertex
+            LineString([(0, 0), (1, 1)])  # clean
+        ]
+    }
+    return gpd.GeoDataFrame(data, crs='EPSG:4326')
 
 
 @pytest.fixture

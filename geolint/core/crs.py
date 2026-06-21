@@ -28,7 +28,7 @@ def get_crs_info(gdf: gpd.GeoDataFrame) -> Dict[str, Union[str, int, bool, None]
         - units: CRS units
         - name: CRS name
     """
-    if gdf.crs is None:
+    if gdf.empty or gdf.crs is None:
         return {
             'crs': None,
             'epsg': None,
@@ -67,9 +67,10 @@ def infer_crs(gdf: gpd.GeoDataFrame, region_hint: Optional[str] = None) -> List[
     Returns:
         List of CRS suggestions sorted by confidence (highest first)
     """
-    if gdf.empty:
+    if gdf.empty or gdf.crs is not None:
+        # Nothing to infer: no data, or a CRS is already assigned.
         return []
-    
+
     bounds = gdf.total_bounds  # [minx, miny, maxx, maxy]
     center_lon = (bounds[0] + bounds[2]) / 2
     center_lat = (bounds[1] + bounds[3]) / 2

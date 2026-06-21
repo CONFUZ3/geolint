@@ -237,14 +237,102 @@ class TestRunValidation:
         """Test validating a file with geometry issues."""
         with tempfile.NamedTemporaryFile(suffix='.gpkg', delete=False) as tmp_file:
             gpkg_path = Path(tmp_file.name)
-        
+
         sample_invalid_gdf.to_file(gpkg_path, driver='GPKG')
-        
+
         report, gdf = run_validation(gpkg_path)
-        
+
         assert report['validation']['has_issues'] is True
         assert report['validation']['status'] == 'issues_found'
         assert len(report['warnings']) > 0
-        
+
         # Cleanup
         gpkg_path.unlink(missing_ok=True)
+
+
+class TestLoadNewFormats:
+    """Test loading the newly supported CSV / Parquet / KML formats."""
+
+    def test_load_csv_with_lonlat(self):
+        import pandas as pd
+
+        with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp_file:
+            csv_path = Path(tmp_file.name)
+
+        try:
+            df = pd.DataFrame({
+                'longitude': [0.0, 1.0, 2.0],
+                'latitude': [0.0, 1.0, 2.0],
+                'name': ['A', 'B', 'C']
+            })
+            df.to_csv(csv_path, index=False)
+
+            gdf = load_dataset(csv_path)
+            assert isinstance(gdf, gpd.GeoDataFrame)
+            assert len(gdf) == 3
+            assert gdf.crs == 'EPSG:4326'
+            assert all(gdf.geometry.geom_type == 'Point')
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+    def test_load_csv_without_lonlat_raises(self):
+        import pandas as pd
+
+        with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp_file:
+            csv_path = Path(tmp_file.name)
+
+        try:
+            df = pd.DataFrame({'name': ['A', 'B'], 'value': [1, 2]})
+            df.to_csv(csv_path, index=False)
+
+            with pytest.raises(ValueError):
+                load_dataset(csv_path)
+        finally:
+            csv_path.unlink(missing_ok=True)
+
+    def test_load_parquet(self):
+        from shapely.geometry import Point
+
+        with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp_file:
+            parquet_path = Path(tmp_file.name)
+
+        try:
+            source = gpd.GeoDataFrame(
+                {'id': [1, 2, 3], 'geometry': [Point(0, 0), Point(1, 1), Point(2, 2)]},
+                crs='EPSG:4326'
+            )
+            source.to_parquet(parquet_path)
+
+            gdf = load_dataset(parquet_path)
+            assert isinstance(gdf, gpd.GeoDataFrame)
+            assert len(gdf) == 3
+            assert gdf.crs == 'EPSG:4326'
+        finally:
+            parquet_path.unlink(missing_ok=True)
+
+    def test_load_kml(self):
+        from shapely.geometry import Point
+
+        with tempfile.NamedTemporaryFile(suffix='.kml', delete=False) as tmp_file:
+            kml_path = Path(tmp_file.name)
+
+        try:
+            source = gpd.GeoDataFrame(
+                {'Name': ['A', 'B'], 'geometry': [Point(0, 0), Point(1, 1)]},
+                crs='EPSG:4326'
+            )
+            try:
+                source.to_file(kml_path, driver='KML')
+            except Exception:
+                pytest.skip("KML driver not available for writing")
+
+            try:
+                gdf = load_dataset(kml_path)
+            except Exception:
+                pytest.skip("KML driver not available for reading")
+
+            assert isinstance(gdf, gpd.GeoDataFrame)
+            assert len(gdf) == 2
+            assert gdf.crs is not None
+        finally:
+            kml_path.unlink(missing_ok=True)

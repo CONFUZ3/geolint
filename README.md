@@ -12,6 +12,11 @@ A robust, open-source Python toolkit to systematically detect, validate, repair,
 - Mixed geometry type detection
 - Coordinate Reference System (CRS) presence verification
 
+### ✅ **Data Quality Checks**
+- **Topology**: duplicate geometries, overlapping polygons, slivers / zero-area geometries, duplicate vertices
+- **Attributes**: ID uniqueness, null fields, shapefile-unsafe field names
+- **Spec compliance**: GeoJSON winding order, out-of-range coordinates
+
 ### 🗺️ **CRS Management**
 - Automatic CRS detection and inference
 - Interactive CRS selection with confidence scoring
@@ -61,6 +66,9 @@ After installation, you can also use the CLI:
 # Validate a file and print a summary
 geolint validate path/to/data.gpkg
 
+# Validate and print a machine-readable JSON report to stdout
+geolint validate path/to/data.gpkg --json
+
 # Batch process multiple files (unify CRS to EPSG:4326)
 geolint batch path/one.geojson path/two.gpkg --unify-crs --target-crs EPSG:4326 --fix-geometries
 
@@ -68,9 +76,11 @@ geolint batch path/one.geojson path/two.gpkg --unify-crs --target-crs EPSG:4326 
 geolint web
 ```
 
+`geolint validate` exits non-zero when hard errors are found (warnings alone still exit 0), making it suitable for CI pipelines.
+
 ## Supported Formats
 
-- **Input**: Shapefile (.zip), GeoPackage (.gpkg), GeoJSON (.geojson)
+- **Input**: Shapefile (.zip), GeoPackage (.gpkg), GeoJSON (.geojson), KML (.kml), CSV with lat/lon columns (.csv), GeoParquet (.parquet)
 - **Output**: GeoPackage (.gpkg), GeoJSON (.geojson), Shapefile (.zip)
 
 ## Usage

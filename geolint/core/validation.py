@@ -12,6 +12,8 @@ from typing import Dict, Tuple, Union
 import geopandas as gpd
 import pandas as pd
 
+from geolint.core.checks import run_checks
+
 
 def load_dataset(path: Union[str, Path]) -> gpd.GeoDataFrame:
     """
@@ -38,16 +40,49 @@ def load_dataset(path: Union[str, Path]) -> gpd.GeoDataFrame:
         raise FileNotFoundError(f"File not found: {path}")
     
     # Handle different file formats
-    if path.suffix.lower() == '.zip':
+    suffix = path.suffix.lower()
+    if suffix == '.zip':
         return _load_shapefile_zip(path)
-    elif path.suffix.lower() in ['.gpkg', '.geojson']:
+    elif suffix in ['.gpkg', '.geojson']:
         return gpd.read_file(path)
+    elif suffix == '.kml':
+        gdf = gpd.read_file(path, driver="KML")
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326")
+        return gdf
+    elif suffix == '.parquet':
+        return gpd.read_parquet(path)
+    elif suffix == '.csv':
+        return _load_csv(path)
     else:
         # Try to read as any supported format
         try:
             return gpd.read_file(path)
         except Exception as e:
             raise ValueError(f"Unsupported file format: {path.suffix}. Error: {e}")
+
+
+def _load_csv(csv_path: Path) -> gpd.GeoDataFrame:
+    """
+    Load a CSV file as point geometries.
+
+    Auto-detects longitude/latitude columns by case-insensitive name match,
+    builds point geometry and wraps in an EPSG:4326 GeoDataFrame.
+    """
+    df = pd.read_csv(csv_path)
+
+    lon_candidates = ['lon', 'lng', 'long', 'longitude', 'x']
+    lat_candidates = ['lat', 'latitude', 'y']
+
+    lower_cols = {str(c).lower(): c for c in df.columns}
+    lon_col = next((lower_cols[c] for c in lon_candidates if c in lower_cols), None)
+    lat_col = next((lower_cols[c] for c in lat_candidates if c in lower_cols), None)
+
+    if lon_col is None or lat_col is None:
+        raise ValueError("No latitude/longitude columns found in CSV")
+
+    geometry = gpd.points_from_xy(df[lon_col], df[lat_col])
+    return gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
 
 
 def _load_shapefile_zip(zip_path: Path) -> gpd.GeoDataFrame:
@@ -60,8 +95,11 @@ def _load_shapefile_zip(zip_path: Path) -> gpd.GeoDataFrame:
         temp_path = Path(temp_dir)
         
         # Extract zip file
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(temp_path)
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_path)
+        except zipfile.BadZipFile as e:
+            raise ValueError(f"Corrupt or invalid zip file: {e}")
         
         # Find the .shp file
         shp_files = list(temp_path.glob("*.shp"))
@@ -213,6 +251,7 @@ def run_validation(path: Union[str, Path]) -> Tuple[Dict, gpd.GeoDataFrame]:
         'validation': {},
         'shapefile_bundle': {},
         'geometry_validation': {},
+        'checks': {},
         'warnings': [],
         'errors': []
     }
@@ -239,7 +278,51 @@ def run_validation(path: Union[str, Path]) -> Tuple[Dict, gpd.GeoDataFrame]:
         # Validate geometries
         geom_validation = validate_geometries(gdf)
         report['geometry_validation'] = geom_validation
-        
+
+        # Run extended checks (topology, attributes, coordinates)
+        checks = run_checks(gdf)
+        report['checks'] = checks
+
+        def _sub(*keys):
+            """Defensively walk nested check dicts; return {} on any miss/error."""
+            node = checks
+            for key in keys:
+                if not isinstance(node, dict):
+                    return {}
+                node = node.get(key, {})
+            return node if isinstance(node, dict) else {}
+
+        dup_geom = _sub('topology', 'duplicate_geometries')
+        if dup_geom.get('duplicate_count', 0) > 0:
+            report['warnings'].append(f"Found {dup_geom['duplicate_count']} duplicate geometries")
+
+        overlaps = _sub('topology', 'overlapping_polygons')
+        if not overlaps.get('skipped', False) and overlaps.get('overlap_pair_count', 0) > 0:
+            report['warnings'].append(f"Found {overlaps['overlap_pair_count']} overlapping polygon pairs")
+
+        id_uniq = _sub('attributes', 'id_uniqueness')
+        if id_uniq.get('duplicate_count', 0) > 0:
+            report['warnings'].append(
+                f"Found {id_uniq['duplicate_count']} duplicate ID values in column '{id_uniq.get('id_column')}'"
+            )
+
+        winding = _sub('coordinates', 'winding_order')
+        if winding.get('non_compliant_count', 0) > 0:
+            report['warnings'].append(
+                f"Found {winding['non_compliant_count']} polygons with non-RFC7946 winding order"
+            )
+
+        coord_range = _sub('coordinates', 'coordinate_range')
+        if coord_range.get('applicable', False) and coord_range.get('out_of_range_count', 0) > 0:
+            report['warnings'].append(
+                f"Found {coord_range['out_of_range_count']} features with out-of-range coordinates"
+            )
+
+        shp_fields = _sub('attributes', 'shapefile_field_names')
+        if (shp_fields.get('long_names') or shp_fields.get('truncation_collisions')
+                or shp_fields.get('non_ascii_names')):
+            report['warnings'].append("Shapefile-unsafe attribute field names detected")
+
         # Add warnings based on validation results
         if geom_validation['invalid_count'] > 0:
             report['warnings'].append(f"Found {geom_validation['invalid_count']} invalid geometries")

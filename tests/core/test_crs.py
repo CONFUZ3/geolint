@@ -167,8 +167,8 @@ class TestAutoDetectUtmZone:
             (0, 0, 1, 1, 31),    # Longitude 0 -> Zone 31
             (6, 0, 7, 1, 32),   # Longitude 6 -> Zone 32
             (12, 0, 13, 1, 33), # Longitude 12 -> Zone 33
-            (174, 0, 175, 1, 59), # Longitude 174 -> Zone 59
-            (180, 0, 181, 1, 60), # Longitude 180 -> Zone 60
+            (174, 0, 175, 1, 60), # center 174.5 -> Zone 60
+            (-177, 0, -176, 1, 1), # center -176.5 -> Zone 1
         ]
         
         for minx, miny, maxx, maxy, expected_zone in test_cases:
