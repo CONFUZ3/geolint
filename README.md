@@ -27,6 +27,8 @@ A robust, open-source Python toolkit to systematically detect, validate, repair,
 - Fix invalid geometries using `shapely.make_valid`
 - Remove empty geometries
 - Explode multipart geometries (optional)
+- Normalize polygon winding order to the RFC 7946 right-hand rule
+- Remove duplicate geometries and duplicate/collinear vertices
 - Reproject to target CRS
 
 ### 📊 **Batch Processing**
@@ -105,11 +107,14 @@ geolint/
 ├── geolint/
 │   ├── core/           # Core validation and processing engine
 │   │   ├── validation.py
+│   │   ├── checks.py    # Topology, attribute & spec quality checks
 │   │   ├── crs.py
 │   │   ├── geometry.py
 │   │   ├── transform.py
 │   │   ├── batch.py
 │   │   └── report.py
+│   ├── cli/            # Command-line interface
+│   │   └── main.py
 │   └── web/            # Streamlit web interface
 │       ├── app.py
 │       ├── components.py
