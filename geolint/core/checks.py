@@ -1128,7 +1128,9 @@ def run_multilayer_checks(
 
 
 def run_checks(gdf: gpd.GeoDataFrame, *, id_column: str = None,
-               force_overlap: bool = False) -> dict:
+               force_overlap: bool = False, gap_area_tol: float = 0.0,
+               dangle_tolerance: float = 0.0, sliver_area_tol: float = 1e-12,
+               sliver_length_tol: float = 1e-12) -> dict:
     """
     Run all quality checks and group results by category.
 
@@ -1139,6 +1141,9 @@ def run_checks(gdf: gpd.GeoDataFrame, *, id_column: str = None,
         gdf: GeoDataFrame to check
         id_column: Explicit identifier column for the id uniqueness check
         force_overlap: Force the overlap check past the feature cap
+        gap_area_tol: Coverage gaps with area <= this are ignored
+        dangle_tolerance: Snap distance for the line-dangle check
+        sliver_area_tol / sliver_length_tol: Tolerances for the sliver check
 
     Returns:
         Dictionary grouped into 'topology', 'attributes', and 'coordinates'.
@@ -1155,11 +1160,14 @@ def run_checks(gdf: gpd.GeoDataFrame, *, id_column: str = None,
             'overlapping_polygons': _safe(
                 check_overlapping_polygons, gdf, force=force_overlap
             ),
-            'slivers': _safe(check_sliver_and_zero_geometries, gdf),
+            'slivers': _safe(check_sliver_and_zero_geometries, gdf,
+                             area_tol=sliver_area_tol, length_tol=sliver_length_tol),
             'duplicate_vertices': _safe(check_duplicate_vertices, gdf),
-            'coverage_gaps': _safe(check_coverage_gaps, gdf, force=force_overlap),
+            'coverage_gaps': _safe(check_coverage_gaps, gdf, area_tol=gap_area_tol,
+                                   force=force_overlap),
             'lines': {
-                'dangles': _safe(check_line_dangles, gdf, force=force_overlap),
+                'dangles': _safe(check_line_dangles, gdf, tolerance=dangle_tolerance,
+                                 force=force_overlap),
                 'self_intersections': _safe(check_line_self_intersections, gdf),
                 'pseudo_nodes': _safe(check_pseudo_nodes, gdf, force=force_overlap),
             },

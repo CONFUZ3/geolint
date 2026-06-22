@@ -1,0 +1,41 @@
+# Example GeoLint configuration.
+# Place a `geolint.toml` (or `.geolint.yml`) in your project root.
+
+# Per-check severity: "error" | "warning" | "info" | "off".
+# Error-severity findings fail `geolint validate` (CI gate).
+[severity]
+overlapping_polygons = "error"
+coverage_gaps = "error"
+line_dangles = "warning"
+pseudo_nodes = "off"
+
+# Tolerances threaded into the checks.
+[thresholds]
+gap_area_tol = 0.0
+dangle_tolerance = 0.0
+sliver_area_tol = 1e-9
+
+# Data contract: declare what the dataset must look like.
+[contract]
+required_columns = ["id", "name"]
+geometry_type = "Polygon"
+crs = "EPSG:4326"
+
+[contract.dtypes]
+id = "integer"
+
+[contract.bounds]
+minx = -180
+miny = -90
+maxx = 180
+maxy = 90
+
+# Per-column rules.
+[[contract.columns]]
+name = "id"
+not_null = true
+unique = true
+
+[[contract.columns]]
+name = "population"
+min = 0

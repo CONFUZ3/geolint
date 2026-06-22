@@ -1,0 +1,39 @@
+name: "GeoLint"
+description: "Validate geospatial data quality and (optionally) upload SARIF to code scanning"
+branding:
+  icon: "map-pin"
+  color: "green"
+inputs:
+  path:
+    description: "Path to the geospatial file to validate"
+    required: true
+  profile:
+    description: "Conformance profile (rfc7946 | geopackage | geoparquet)"
+    required: false
+    default: ""
+  config:
+    description: "Path to a geolint config file"
+    required: false
+    default: ""
+  strict:
+    description: "Treat warnings as failures (true/false)"
+    required: false
+    default: "false"
+  sarif:
+    description: "SARIF output path"
+    required: false
+    default: "geolint.sarif"
+runs:
+  using: "composite"
+  steps:
+    - name: Install GeoLint
+      shell: bash
+      run: pip install geolint
+    - name: Run GeoLint
+      shell: bash
+      run: |
+        args=("${{ inputs.path }}" "--sarif" "${{ inputs.sarif }}")
+        if [ -n "${{ inputs.profile }}" ]; then args+=("--profile" "${{ inputs.profile }}"); fi
+        if [ -n "${{ inputs.config }}" ]; then args+=("--config" "${{ inputs.config }}"); fi
+        if [ "${{ inputs.strict }}" = "true" ]; then args+=("--strict"); fi
+        geolint validate "${args[@]}"

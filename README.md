@@ -29,6 +29,20 @@ A robust, open-source Python toolkit to systematically detect, validate, repair,
 - **GeoParquet 1.1**: `geo` file metadata, version, primary column, column encodings, CRS PROJJSON
 - CI-friendly: `--fail-on-nonconformance` exits non-zero when an error-severity check fails
 
+### ⚙️ **Config-as-Code, Contracts & Severity**
+- `geolint.toml` / `.geolint.yml`: per-check **severity** (error/warning/info/off), thresholds, scoping
+- **Data contracts**: required columns, dtypes, expected geometry type / CRS / bounds, and per-column rules (not-null, unique, range, enum, regex)
+- Severity-driven **exit codes** (`--strict`) and a **baseline file** for incremental adoption on messy data
+
+### 🚦 **CI-Native Distribution**
+- **SARIF 2.1.0** output (`--sarif`) → GitHub code-scanning annotations on PRs
+- **GeoJSON error layer** (`--error-layer`) → open flagged features straight in QGIS
+- A **pre-commit hook** (`geolint-precommit`) and a reusable **GitHub Action** (`action.yml`)
+
+### ☁️ **Cloud-Native Scale**
+- Read **remote** inputs directly: `s3://`, `gs://`, `https://` (via GDAL `/vsi` and pyarrow)
+- Optional **DuckDB** backend (`info --fast`) for quick count/bbox over large GeoParquet without loading it all
+
 ### 🗺️ **CRS Management**
 - Automatic CRS detection and inference
 - Interactive CRS selection with confidence scoring
@@ -176,6 +190,57 @@ geolint info --list-profiles
 
 # Launch the web UI from the CLI
 geolint web
+```
+
+### Configuration, CI gating & cloud inputs
+
+Declare a `geolint.toml` (or `.geolint.yml`) in your project root to turn GeoLint into a real gate (see `examples/geolint.toml`):
+
+```toml
+[severity]                      # error | warning | info | off
+overlapping_polygons = "error"
+pseudo_nodes = "off"
+
+[thresholds]
+gap_area_tol = 0.0
+
+[contract]                      # data contract: what the dataset must look like
+required_columns = ["id", "name"]
+geometry_type = "Polygon"
+crs = "EPSG:4326"
+
+[[contract.columns]]
+name = "id"
+not_null = true
+unique = true
+```
+
+```bash
+# Gate CI on a config (error-severity findings -> exit 1); treat warnings as errors with --strict
+geolint validate parcels.gpkg --config geolint.toml
+geolint validate parcels.gpkg --strict
+
+# Adopt incrementally on messy data: snapshot current findings, then suppress them
+geolint validate parcels.gpkg --strict --write-baseline .geolint-baseline.json
+geolint validate parcels.gpkg --strict --baseline .geolint-baseline.json
+
+# Emit SARIF for GitHub code scanning, and a GeoJSON layer of the offending features
+geolint validate parcels.gpkg --strict --sarif geolint.sarif --error-layer errors.geojson
+
+# Read remote data, or get a fast count/bbox of huge GeoParquet via DuckDB
+geolint validate s3://bucket/parcels.parquet --profile geoparquet
+geolint info s3://bucket/huge.parquet --fast
+```
+
+GeoLint ships a **pre-commit hook** (`.pre-commit-hooks.yaml`) and a reusable **GitHub Action** (`action.yml`); see `examples/github-workflow.yml` for a ready-to-copy workflow that uploads SARIF.
+
+```yaml
+# .pre-commit-config.yaml
+- repo: https://github.com/CONFUZ3/geolint
+  rev: v0.2.0
+  hooks:
+    - id: geolint
+      args: [--strict]
 ```
 
 ## Interactive Mode

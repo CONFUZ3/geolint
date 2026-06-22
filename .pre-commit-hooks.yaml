@@ -1,0 +1,7 @@
+- id: geolint
+  name: GeoLint
+  description: Lint geospatial data quality (topology, attributes, spec conformance)
+  entry: geolint-precommit
+  language: python
+  files: \.(gpkg|geojson|json|parquet|kml|zip)$
+  require_serial: true

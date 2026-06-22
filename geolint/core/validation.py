@@ -15,30 +15,69 @@ import pandas as pd
 from geolint.core.checks import run_checks
 
 
+_REMOTE_SCHEMES = ('s3://', 'gs://', 'http://', 'https://', '/vsi')
+
+
+def is_remote(path) -> bool:
+    """True when ``path`` is a remote URL / GDAL virtual path rather than local."""
+    return str(path).startswith(_REMOTE_SCHEMES)
+
+
+def to_vsi_path(url: str) -> str:
+    """
+    Translate a remote URL into a GDAL /vsi path for vector formats.
+
+    s3://b/k -> /vsis3/b/k, gs://b/k -> /vsigs/b/k, http(s):// -> /vsicurl/...,
+    and existing /vsi... paths are returned unchanged.
+    """
+    if url.startswith('/vsi'):
+        return url
+    if url.startswith('s3://'):
+        return '/vsis3/' + url[len('s3://'):]
+    if url.startswith('gs://'):
+        return '/vsigs/' + url[len('gs://'):]
+    if url.startswith(('http://', 'https://')):
+        return '/vsicurl/' + url
+    return url
+
+
+def _load_remote(url: str) -> gpd.GeoDataFrame:
+    """Load a dataset from a remote URL (best effort, no local existence check)."""
+    head = url.split('?', 1)[0].lower()
+    if head.endswith(('.parquet', '.pq')):
+        # pyarrow/fsspec handle s3:// and https:// for Parquet.
+        return gpd.read_parquet(url)
+    return gpd.read_file(to_vsi_path(url))
+
+
 def load_dataset(path: Union[str, Path]) -> gpd.GeoDataFrame:
     """
     Load a geospatial dataset from various formats.
-    
+
     Supports:
     - GeoPackage (.gpkg)
     - GeoJSON (.geojson)
     - Shapefile (.zip containing .shp/.shx/.dbf/.prj)
-    
+    - Remote URLs (s3://, gs://, http(s)://) via GDAL /vsi or pyarrow
+
     Args:
-        path: Path to the dataset file
-        
+        path: Path or URL to the dataset
+
     Returns:
         GeoDataFrame containing the loaded data
-        
+
     Raises:
         ValueError: If file format is not supported
-        FileNotFoundError: If file does not exist
+        FileNotFoundError: If a local file does not exist
     """
+    if is_remote(path):
+        return _load_remote(str(path))
+
     path = Path(path)
-    
+
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
-    
+
     # Handle different file formats
     suffix = path.suffix.lower()
     if suffix == '.zip':
@@ -230,18 +269,29 @@ def validate_geometries(gdf: gpd.GeoDataFrame) -> Dict[str, Union[int, bool, lis
     }
 
 
-def _populate_report(report: Dict, gdf: gpd.GeoDataFrame) -> Dict:
+def _populate_report(report: Dict, gdf: gpd.GeoDataFrame, config=None) -> Dict:
     """
     Populate a report dict with geometry validation, checks, warnings and status
     for an already-loaded GeoDataFrame. Used by both single-file validation and
     per-layer multi-layer validation so the logic stays in one place.
+
+    When ``config`` is given, its thresholds are threaded into run_checks.
     """
     # Validate geometries
     geom_validation = validate_geometries(gdf)
     report['geometry_validation'] = geom_validation
 
     # Run extended checks (topology, attributes, coordinates)
-    checks = run_checks(gdf)
+    if config is not None:
+        checks = run_checks(
+            gdf,
+            gap_area_tol=config.threshold('gap_area_tol', 0.0),
+            dangle_tolerance=config.threshold('dangle_tolerance', 0.0),
+            sliver_area_tol=config.threshold('sliver_area_tol', 1e-12),
+            sliver_length_tol=config.threshold('sliver_length_tol', 1e-12),
+        )
+    else:
+        checks = run_checks(gdf)
     report['checks'] = checks
 
     def _sub(*keys):
@@ -464,7 +514,8 @@ def run_multilayer_validation(
     return report, aligned
 
 
-def run_validation(path: Union[str, Path], *, profile: str = None) -> Tuple[Dict, gpd.GeoDataFrame]:
+def run_validation(path: Union[str, Path], *, profile: str = None,
+                   config=None) -> Tuple[Dict, gpd.GeoDataFrame]:
     """
     Run comprehensive validation on a geospatial dataset.
 
@@ -473,17 +524,27 @@ def run_validation(path: Union[str, Path], *, profile: str = None) -> Tuple[Dict
         profile: Optional conformance profile to run (e.g. 'rfc7946',
             'geopackage', 'geoparquet'). When set, results are stored under the
             'conformance' key and failing error-severity checks add warnings.
+        config: Optional geolint Config. When given, its thresholds drive the
+            checks, its contract is validated, and severity-tagged findings are
+            stored under 'findings' / 'findings_summary'.
 
     Returns:
         Tuple of (validation_report, loaded_geodataframe)
     """
-    path = Path(path)
+    # Remote URLs must stay as raw strings - wrapping them in Path mangles the
+    # scheme on Windows (s3:// -> s3:/). Keep a Path only for local inputs.
+    remote = is_remote(path)
+    raw = str(path)
+    path_obj = None if remote else Path(path)
+    source = raw if remote else path_obj
+    suffix = (raw.split('?', 1)[0].lower().rsplit('.', 1)[-1]
+              if remote else path_obj.suffix.lower().lstrip('.'))
 
     # Initialize report
     report = {
-        'file_path': str(path),
-        'file_name': path.name,
-        'file_size': path.stat().st_size if path.exists() else 0,
+        'file_path': raw,
+        'file_name': raw.rstrip('/').rsplit('/', 1)[-1] if remote else path_obj.name,
+        'file_size': (path_obj.stat().st_size if (path_obj and path_obj.exists()) else 0),
         'timestamp': pd.Timestamp.now().isoformat(),
         'validation': {},
         'shapefile_bundle': {},
@@ -495,15 +556,15 @@ def run_validation(path: Union[str, Path], *, profile: str = None) -> Tuple[Dict
 
     try:
         # Load dataset
-        gdf = load_dataset(path)
+        gdf = load_dataset(source)
         report['validation']['loaded_successfully'] = True
         report['validation']['feature_count'] = len(gdf)
         report['validation']['column_count'] = len(gdf.columns)
         report['validation']['crs_present'] = gdf.crs is not None
 
-        # Check shapefile bundle if it's a zip file
-        if path.suffix.lower() == '.zip':
-            bundle_info = check_shapefile_bundle(path)
+        # Check shapefile bundle if it's a local zip file
+        if not remote and suffix == 'zip':
+            bundle_info = check_shapefile_bundle(path_obj)
             report['shapefile_bundle'] = bundle_info
 
             if not bundle_info.get('is_complete', True):
@@ -513,18 +574,28 @@ def run_validation(path: Union[str, Path], *, profile: str = None) -> Tuple[Dict
                 report['warnings'].append("No .prj file found - CRS information may be missing")
 
         # Validate geometries, run checks, build warnings and status.
-        _populate_report(report, gdf)
+        _populate_report(report, gdf, config)
 
         # Optional spec conformance profile.
         if profile:
             from geolint.core.profiles import run_profile
-            conformance = run_profile(path, profile, gdf=gdf)
+            conformance = run_profile(source, profile, gdf=gdf)
             report['conformance'] = conformance
             for res in conformance.get('checks', {}).values():
                 if res.get('status') == 'fail' and res.get('severity') == 'error':
                     report['warnings'].append(
                         f"[{conformance.get('profile')}] {res.get('title')}: {res.get('message')}"
                     )
+
+        # Optional data contract + severity-tagged findings.
+        if config is not None:
+            if config.contract:
+                from geolint.core.contracts import check_schema_contract
+                report['contract'] = check_schema_contract(gdf, config.contract)
+            from geolint.core.findings import collect_findings, summarize
+            findings = collect_findings(report, config)
+            report['findings'] = findings
+            report['findings_summary'] = summarize(findings)
 
     except (FileNotFoundError, ValueError, OSError) as e:
         report['validation']['loaded_successfully'] = False

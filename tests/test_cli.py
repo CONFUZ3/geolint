@@ -280,3 +280,66 @@ class TestMultiLayerCLI:
         assert result.returncode == 0, result.stderr or result.stdout
         data = json.loads(result.stdout)
         assert data["inter_layer"]["layer_count"] == 2
+
+
+class TestConfigGatingCLI:
+    def _overlap_gpkg(self, tmp_path):
+        path = tmp_path / "overlap.gpkg"
+        _polys_gdf([(0, 0, 2, 2), (1, 1, 3, 3)]).to_file(path, driver="GPKG")
+        return path
+
+    def test_no_config_overlap_exits_zero(self, tmp_path):
+        # Legacy behaviour: soft findings do not gate without config/--strict.
+        result = run_cli("validate", str(self._overlap_gpkg(tmp_path)))
+        assert result.returncode == 0, result.stderr or result.stdout
+
+    def test_strict_overlap_exits_one(self, tmp_path):
+        result = run_cli("validate", str(self._overlap_gpkg(tmp_path)), "--strict")
+        assert result.returncode == 1
+
+    def test_config_severity_error_gates(self, tmp_path):
+        cfg = tmp_path / "geolint.toml"
+        cfg.write_text('[severity]\noverlapping_polygons = "error"\n', encoding="utf-8")
+        result = run_cli(
+            "validate", str(self._overlap_gpkg(tmp_path)), "--config", str(cfg)
+        )
+        assert result.returncode == 1
+
+    def test_baseline_suppresses(self, tmp_path):
+        gpkg = self._overlap_gpkg(tmp_path)
+        base = tmp_path / "baseline.json"
+        # Record the current findings...
+        w = run_cli("validate", str(gpkg), "--strict", "--write-baseline", str(base))
+        assert w.returncode == 0, w.stderr or w.stdout
+        assert base.exists()
+        # ...then they no longer gate.
+        r = run_cli("validate", str(gpkg), "--strict", "--baseline", str(base))
+        assert r.returncode == 0, r.stderr or r.stdout
+
+    def test_contract_violation_gates(self, tmp_path):
+        cfg = tmp_path / "geolint.toml"
+        cfg.write_text(
+            '[contract]\nrequired_columns = ["nonexistent_column"]\n', encoding="utf-8"
+        )
+        result = run_cli(
+            "validate", str(self._overlap_gpkg(tmp_path)), "--config", str(cfg), "--json"
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert any(v["rule"] == "required_column" for v in data["contract"])
+
+
+class TestCIOutputsCLI:
+    def test_sarif_and_error_layer(self, tmp_path):
+        gpkg = tmp_path / "overlap.gpkg"
+        _polys_gdf([(0, 0, 2, 2), (1, 1, 3, 3)]).to_file(gpkg, driver="GPKG")
+        sarif = tmp_path / "out.sarif"
+        errlayer = tmp_path / "errors.geojson"
+        result = run_cli(
+            "validate", str(gpkg), "--sarif", str(sarif), "--error-layer", str(errlayer)
+        )
+        assert result.returncode == 0, result.stderr or result.stdout
+        assert sarif.exists() and errlayer.exists()
+        data = json.loads(sarif.read_text())
+        assert data["version"] == "2.1.0"
+        assert data["runs"][0]["tool"]["driver"]["name"] == "GeoLint"

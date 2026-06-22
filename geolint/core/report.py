@@ -57,6 +57,9 @@ def generate_report(
         'geometry_validation': validation_report.get('geometry_validation', {}),
         'checks': validation_report.get('checks', {}),
         'conformance': validation_report.get('conformance', {}),
+        'contract': validation_report.get('contract', []),
+        'findings': validation_report.get('findings', []),
+        'findings_summary': validation_report.get('findings_summary', {}),
         'warnings': validation_report.get('warnings', []),
         'errors': validation_report.get('errors', [])
     }

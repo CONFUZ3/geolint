@@ -1,0 +1,35 @@
+# Example GitHub Actions workflow that gates a PR on geospatial data quality
+# and uploads findings to GitHub code scanning. Copy this into
+# .github/workflows/ in your own repository and adjust the path/glob.
+
+name: GeoLint
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  geolint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # required to upload SARIF
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install geolint
+
+      # Validate a dataset; fail the job on error-severity findings and write SARIF.
+      - name: Validate data
+        run: geolint validate data/parcels.gpkg --profile geopackage --sarif geolint.sarif --strict
+
+      # Surface findings as code-scanning annotations (runs even if the step above failed).
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: geolint.sarif

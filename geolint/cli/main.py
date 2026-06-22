@@ -41,6 +41,25 @@ def _multilayer_requested(args: argparse.Namespace, input_path: Path) -> bool:
     return False
 
 
+def _print_findings(findings: list, suppressed: int = 0) -> None:
+    if not findings:
+        msg = "No findings."
+        if suppressed:
+            msg += f" ({suppressed} suppressed by baseline)"
+        print(f"\n{msg}")
+        return
+    counts = {'error': 0, 'warning': 0, 'info': 0}
+    for f in findings:
+        counts[f.get('severity', 'warning')] = counts.get(f.get('severity', 'warning'), 0) + 1
+    print(
+        f"\nFindings: {counts['error']} error, {counts['warning']} warning, "
+        f"{counts['info']} info"
+        + (f" ({suppressed} suppressed)" if suppressed else "")
+    )
+    for f in findings:
+        print(f"  [{f.get('severity', 'warning'):7s}] {f.get('check_id')}: {f.get('message')}")
+
+
 def _print_conformance(conformance: dict) -> None:
     if not conformance or conformance.get("error"):
         return
@@ -83,18 +102,40 @@ def _print_multilayer(report: dict) -> None:
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
+    from geolint.core.validation import is_remote
+
+    remote = is_remote(args.input)
     input_path = Path(args.input)
-    if not input_path.exists():
+    if not remote and not input_path.exists():
         print(f"Error: input not found: {input_path}")
         return 1
 
-    if _multilayer_requested(args, input_path):
+    if not remote and _multilayer_requested(args, input_path):
         return _cmd_validate_multilayer(args, input_path)
 
     try:
-        report, gdf = run_validation(input_path, profile=args.profile)
+        from geolint.core.config import load_config
+        from geolint.core.findings import apply_baseline, exit_code, load_baseline, write_baseline
+
+        config = load_config(Path(args.config) if args.config else None)
+
+        source = args.input if remote else input_path
+        report, gdf = run_validation(source, profile=args.profile, config=config)
         crs_info = get_crs_info(gdf) if (not gdf.empty and gdf.crs is not None) else None
         full_report = generate_report(report, crs_info=crs_info)
+
+        findings = report.get("findings", [])
+
+        # Write a baseline of the current findings, then exit.
+        if args.write_baseline:
+            write_baseline(args.write_baseline, findings)
+            print(f"Baseline written to {args.write_baseline} ({len(findings)} findings)")
+            return 0
+
+        suppressed = 0
+        if args.baseline:
+            findings, suppressed = apply_baseline(findings, load_baseline(args.baseline))
+
         if args.json:
             print(json.dumps(full_report, indent=2, default=str))
         else:
@@ -102,19 +143,39 @@ def _cmd_validate(args: argparse.Namespace) -> int:
             print(report)
             if args.profile:
                 _print_conformance(full_report.get("conformance", {}))
+            _print_findings(findings, suppressed)
         if args.report:
             out = Path(args.report)
             save_report(full_report, out)
             print(f"Report written to {out}")
 
+        # CI-native outputs.
+        if args.sarif:
+            from geolint.core.sarif import to_sarif
+            sarif = to_sarif(findings, args.input)
+            sarif_path = Path(args.sarif)
+            sarif_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(sarif_path, "w", encoding="utf-8") as fh:
+                json.dump(sarif, fh, indent=2)
+            print(f"SARIF written to {sarif_path}")
+        if args.error_layer and not gdf.empty:
+            from geolint.core.error_layer import write_error_layer
+            written = write_error_layer(gdf, report, args.error_layer)
+            print(f"Error layer written to {written}")
+
+        # Exit-code policy: hard errors always fail (legacy); severity gating
+        # engages only when a config file is present or --strict is set.
+        if full_report.get("errors") or report.get("validation", {}).get("status") == "error":
+            return 1
         nonconformant = (
             args.profile
             and full_report.get("conformance", {}).get("conformant") is False
         )
         if args.fail_on_nonconformance and nonconformant:
             return 1
-        if full_report.get("errors") or report.get("validation", {}).get("status") == "error":
-            return 1
+        gate = (config.source is not None) or args.strict
+        if gate:
+            return exit_code(findings, strict=args.strict)
         return 0
     except Exception as exc:
         print(f"Validation failed: {exc}")
@@ -235,12 +296,30 @@ def _cmd_info(args: argparse.Namespace) -> int:
         print("Error: input is required (or use --list-profiles)")
         return 1
 
+    from geolint.core.validation import is_remote
+    remote = is_remote(args.input)
     input_path = Path(args.input)
-    if not input_path.exists():
+    if not remote and not input_path.exists():
         print(f"Error: input not found: {input_path}")
         return 1
+
+    # Fast path: count + bbox via DuckDB without materialising a GeoDataFrame.
+    if getattr(args, "fast", False):
+        from geolint.core.duckdb_backend import can_handle, quick_stats
+        if can_handle(args.input):
+            stats = quick_stats(args.input)
+            if args.json:
+                print(json.dumps(stats, indent=2, default=str))
+            else:
+                print("Fast info (DuckDB):")
+                print(f"  Feature count: {stats['feature_count']}")
+                print(f"  Bounds:        {stats['bbox']}")
+            return 0
+        print("Fast engine unavailable (needs duckdb + a .parquet input); using full read.")
+
+    source = args.input if remote else input_path
     try:
-        report, gdf = run_validation(input_path)
+        report, gdf = run_validation(source)
         if gdf.empty and report.get("errors"):
             print(report["errors"][0])
             return 1
@@ -380,6 +459,54 @@ def _cmd_wizard(args: argparse.Namespace) -> int:
     return run_wizard(getattr(args, "input", None))
 
 
+def precommit_app() -> None:
+    """
+    Validate many files at once (pre-commit friendly).
+
+    Pre-commit passes the staged filenames as positional args. Each file is
+    validated independently; the process exits non-zero if any file has an
+    error-severity finding (or a warning when --strict) or fails to load.
+    """
+    parser = argparse.ArgumentParser(
+        prog="geolint-precommit",
+        description="Validate multiple geospatial files (for pre-commit / CI)",
+    )
+    parser.add_argument("files", nargs="*", help="Files to validate")
+    parser.add_argument("--strict", action="store_true", default=False)
+    parser.add_argument("--config", default=None)
+    parser.add_argument(
+        "--profile", default=None,
+        choices=["rfc7946", "geopackage", "geoparquet"],
+    )
+    parsed = parser.parse_args()
+
+    from geolint.core.config import load_config
+    from geolint.core.findings import exit_code
+
+    config = load_config(Path(parsed.config) if parsed.config else None)
+    overall = 0
+    for fp in parsed.files:
+        path = Path(fp)
+        if not path.exists():
+            continue
+        try:
+            report, _ = run_validation(path, profile=parsed.profile, config=config)
+        except Exception as exc:  # noqa: BLE001
+            print(f"{fp}: validation failed: {exc}")
+            overall = 1
+            continue
+        findings = report.get("findings", [])
+        print(f"{fp}: {len(findings)} finding(s)")
+        for f in findings:
+            print(f"  [{f['severity']:7s}] {f['check_id']}: {f['message']}")
+        if report.get("validation", {}).get("status") == "error":
+            overall = 1
+        gate = (config.source is not None) or parsed.strict
+        if gate and exit_code(findings, strict=parsed.strict) == 1:
+            overall = 1
+    sys.exit(overall)
+
+
 def app() -> None:
     parser = argparse.ArgumentParser(
         prog="geolint",
@@ -406,6 +533,40 @@ def app() -> None:
         action="store_true",
         default=False,
         help="Exit non-zero when a --profile check fails (for CI gates)",
+    )
+    p_validate.add_argument(
+        "--config",
+        default=None,
+        help="Path to a geolint config (geolint.toml/.geolint.yml); else auto-discovered",
+    )
+    p_validate.add_argument(
+        "--strict",
+        action="store_true",
+        default=False,
+        help="Treat warning-severity findings as failures (exit non-zero)",
+    )
+    p_validate.add_argument(
+        "--baseline",
+        default=None,
+        help="Suppress findings listed in this baseline file",
+    )
+    p_validate.add_argument(
+        "--write-baseline",
+        default=None,
+        metavar="PATH",
+        help="Write current findings to a baseline file and exit",
+    )
+    p_validate.add_argument(
+        "--sarif",
+        default=None,
+        metavar="PATH",
+        help="Write findings as SARIF 2.1.0 (for GitHub code scanning)",
+    )
+    p_validate.add_argument(
+        "--error-layer",
+        default=None,
+        metavar="PATH",
+        help="Write flagged features as a GeoJSON error layer for QGIS triage",
     )
     # Multi-layer / inter-layer options (additive; trigger multi-layer mode).
     p_validate.add_argument(
@@ -556,6 +717,11 @@ def app() -> None:
         "--list-profiles",
         action="store_true",
         help="List available conformance profiles and exit",
+    )
+    p_info.add_argument(
+        "--fast",
+        action="store_true",
+        help="Use the DuckDB backend for a quick count/bbox (Parquet only)",
     )
     p_info.set_defaults(func=_cmd_info)
 
