@@ -230,18 +230,255 @@ def validate_geometries(gdf: gpd.GeoDataFrame) -> Dict[str, Union[int, bool, lis
     }
 
 
-def run_validation(path: Union[str, Path]) -> Tuple[Dict, gpd.GeoDataFrame]:
+def _populate_report(report: Dict, gdf: gpd.GeoDataFrame) -> Dict:
+    """
+    Populate a report dict with geometry validation, checks, warnings and status
+    for an already-loaded GeoDataFrame. Used by both single-file validation and
+    per-layer multi-layer validation so the logic stays in one place.
+    """
+    # Validate geometries
+    geom_validation = validate_geometries(gdf)
+    report['geometry_validation'] = geom_validation
+
+    # Run extended checks (topology, attributes, coordinates)
+    checks = run_checks(gdf)
+    report['checks'] = checks
+
+    def _sub(*keys):
+        """Defensively walk nested check dicts; return {} on any miss/error."""
+        node = checks
+        for key in keys:
+            if not isinstance(node, dict):
+                return {}
+            node = node.get(key, {})
+        return node if isinstance(node, dict) else {}
+
+    dup_geom = _sub('topology', 'duplicate_geometries')
+    if dup_geom.get('duplicate_count', 0) > 0:
+        report['warnings'].append(f"Found {dup_geom['duplicate_count']} duplicate geometries")
+
+    overlaps = _sub('topology', 'overlapping_polygons')
+    if not overlaps.get('skipped', False) and overlaps.get('overlap_pair_count', 0) > 0:
+        report['warnings'].append(f"Found {overlaps['overlap_pair_count']} overlapping polygon pairs")
+
+    coverage_gaps = _sub('topology', 'coverage_gaps')
+    if not coverage_gaps.get('skipped', False) and coverage_gaps.get('gap_count', 0) > 0:
+        report['warnings'].append(f"Found {coverage_gaps['gap_count']} coverage gaps")
+
+    dangles = _sub('topology', 'lines', 'dangles')
+    if not dangles.get('skipped', False) and dangles.get('dangle_count', 0) > 0:
+        report['warnings'].append(f"Found {dangles['dangle_count']} dangling line endpoints")
+
+    self_int = _sub('topology', 'lines', 'self_intersections')
+    if self_int.get('self_intersecting_count', 0) > 0:
+        report['warnings'].append(
+            f"Found {self_int['self_intersecting_count']} self-intersecting lines"
+        )
+
+    id_uniq = _sub('attributes', 'id_uniqueness')
+    if id_uniq.get('duplicate_count', 0) > 0:
+        report['warnings'].append(
+            f"Found {id_uniq['duplicate_count']} duplicate ID values in column '{id_uniq.get('id_column')}'"
+        )
+
+    winding = _sub('coordinates', 'winding_order')
+    if winding.get('non_compliant_count', 0) > 0:
+        report['warnings'].append(
+            f"Found {winding['non_compliant_count']} polygons with non-RFC7946 winding order"
+        )
+
+    coord_range = _sub('coordinates', 'coordinate_range')
+    if coord_range.get('applicable', False) and coord_range.get('out_of_range_count', 0) > 0:
+        report['warnings'].append(
+            f"Found {coord_range['out_of_range_count']} features with out-of-range coordinates"
+        )
+
+    shp_fields = _sub('attributes', 'shapefile_field_names')
+    if (shp_fields.get('long_names') or shp_fields.get('truncation_collisions')
+            or shp_fields.get('non_ascii_names')):
+        report['warnings'].append("Shapefile-unsafe attribute field names detected")
+
+    # Add warnings based on validation results
+    if geom_validation['invalid_count'] > 0:
+        report['warnings'].append(f"Found {geom_validation['invalid_count']} invalid geometries")
+
+    if geom_validation['empty_count'] > 0:
+        report['warnings'].append(f"Found {geom_validation['empty_count']} empty geometries")
+
+    if geom_validation.get('null_count', 0) > 0:
+        report['warnings'].append(f"Found {geom_validation['null_count']} null geometries")
+
+    if geom_validation['mixed_types']:
+        report['warnings'].append(f"Mixed geometry types detected: {geom_validation['geometry_types']}")
+
+    if gdf.crs is None:
+        report['warnings'].append("No CRS information found")
+
+    # Overall status
+    has_issues = (
+        geom_validation['invalid_count'] > 0 or
+        geom_validation['empty_count'] > 0 or
+        geom_validation.get('null_count', 0) > 0 or
+        gdf.crs is None
+    )
+    report['validation']['has_issues'] = has_issues
+    report['validation']['status'] = 'issues_found' if has_issues else 'clean'
+    return report
+
+
+def _empty_report(name: str) -> Dict:
+    """Build the empty report skeleton used by both validation entry points."""
+    return {
+        'file_path': name,
+        'file_name': name,
+        'file_size': 0,
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'validation': {},
+        'shapefile_bundle': {},
+        'geometry_validation': {},
+        'checks': {},
+        'warnings': [],
+        'errors': [],
+    }
+
+
+def list_layers(path: Union[str, Path]) -> list:
+    """
+    List the layer names available in a dataset.
+
+    Multi-layer container formats (GeoPackage, SQLite, FileGDB) are enumerated;
+    single-layer formats return a one-element list of the file stem.
+    """
+    path = Path(path)
+    if path.suffix.lower() in ('.gpkg', '.sqlite', '.gdb'):
+        try:
+            import pyogrio
+            return [str(row[0]) for row in pyogrio.list_layers(path)]
+        except Exception:
+            try:
+                import fiona
+                return list(fiona.listlayers(str(path)))
+            except Exception:
+                pass
+    return [path.stem]
+
+
+def load_layers(inputs, *, layers=None) -> Dict[str, gpd.GeoDataFrame]:
+    """
+    Load one or more layers into an ordered name -> GeoDataFrame mapping.
+
+    - A single multi-layer GeoPackage: enumerate all layers (or the subset in
+      ``layers``), keyed by layer name.
+    - Multiple file paths (or a single non-GPKG file): each loaded via
+      ``load_dataset`` and keyed by file stem (collisions disambiguated by '#N').
+
+    Args:
+        inputs: A path, or a sequence of paths.
+        layers: Optional subset of layer names to load (GeoPackage only).
+
+    Returns:
+        Dict mapping layer/file name to GeoDataFrame (insertion-ordered).
+    """
+    if isinstance(inputs, (str, Path)):
+        inputs = [inputs]
+    inputs = [Path(p) for p in inputs]
+
+    result: Dict[str, gpd.GeoDataFrame] = {}
+
+    # Single multi-layer container: enumerate layers.
+    if len(inputs) == 1 and inputs[0].suffix.lower() in ('.gpkg', '.sqlite', '.gdb'):
+        path = inputs[0]
+        available = list_layers(path)
+        chosen = layers if layers is not None else available
+        for name in chosen:
+            if name not in available:
+                raise ValueError(f"Layer not found in {path.name}: {name}")
+            result[str(name)] = gpd.read_file(path, layer=name)
+        return result
+
+    # One or more files: key by stem with collision disambiguation.
+    for p in inputs:
+        key = p.stem
+        if key in result:
+            i = 2
+            while f"{key}#{i}" in result:
+                i += 1
+            key = f"{key}#{i}"
+        result[key] = load_dataset(p)
+    return result
+
+
+def run_multilayer_validation(
+    inputs,
+    *,
+    layers=None,
+    crs_policy: str = 'error',
+    target_crs=None,
+    coverage_layers=None,
+    must_not_overlap=None,
+    must_be_covered_by=None,
+    force: bool = False,
+) -> Tuple[Dict, Dict[str, gpd.GeoDataFrame]]:
+    """
+    Load multiple layers, validate each individually, align their CRS, and run
+    inter-layer / coverage checks.
+
+    Returns:
+        Tuple of (multilayer_report, aligned_layer_mapping).
+    """
+    # Imported here to avoid any import-order coupling at module load.
+    from geolint.core.checks import run_multilayer_checks
+    from geolint.core.crs import get_crs_info
+    from geolint.core.report import generate_multilayer_report, generate_report
+    from geolint.core.transform import align_layers_crs
+
+    layer_map = load_layers(inputs, layers=layers)
+
+    per_layer_reports: Dict[str, Dict] = {}
+    for name, gdf in layer_map.items():
+        sub = _empty_report(name)
+        sub['validation']['loaded_successfully'] = True
+        sub['validation']['feature_count'] = len(gdf)
+        sub['validation']['column_count'] = len(gdf.columns)
+        sub['validation']['crs_present'] = gdf.crs is not None
+        _populate_report(sub, gdf)
+        crs_info = get_crs_info(gdf) if (not gdf.empty and gdf.crs is not None) else None
+        per_layer_reports[name] = generate_report(sub, crs_info=crs_info)
+
+    aligned, crs_alignment = align_layers_crs(
+        layer_map, policy=crs_policy, target_crs=target_crs
+    )
+
+    if crs_alignment.get('aligned'):
+        inter_results = run_multilayer_checks(
+            aligned,
+            coverage_layers=coverage_layers,
+            must_not_overlap=must_not_overlap,
+            must_be_covered_by=must_be_covered_by,
+            force=force,
+        )
+    else:
+        inter_results = {}
+
+    report = generate_multilayer_report(per_layer_reports, inter_results, crs_alignment)
+    return report, aligned
+
+
+def run_validation(path: Union[str, Path], *, profile: str = None) -> Tuple[Dict, gpd.GeoDataFrame]:
     """
     Run comprehensive validation on a geospatial dataset.
-    
+
     Args:
         path: Path to the dataset
-        
+        profile: Optional conformance profile to run (e.g. 'rfc7946',
+            'geopackage', 'geoparquet'). When set, results are stored under the
+            'conformance' key and failing error-severity checks add warnings.
+
     Returns:
         Tuple of (validation_report, loaded_geodataframe)
     """
     path = Path(path)
-    
+
     # Initialize report
     report = {
         'file_path': str(path),
@@ -255,7 +492,7 @@ def run_validation(path: Union[str, Path]) -> Tuple[Dict, gpd.GeoDataFrame]:
         'warnings': [],
         'errors': []
     }
-    
+
     try:
         # Load dataset
         gdf = load_dataset(path)
@@ -263,92 +500,32 @@ def run_validation(path: Union[str, Path]) -> Tuple[Dict, gpd.GeoDataFrame]:
         report['validation']['feature_count'] = len(gdf)
         report['validation']['column_count'] = len(gdf.columns)
         report['validation']['crs_present'] = gdf.crs is not None
-        
+
         # Check shapefile bundle if it's a zip file
         if path.suffix.lower() == '.zip':
             bundle_info = check_shapefile_bundle(path)
             report['shapefile_bundle'] = bundle_info
-            
+
             if not bundle_info.get('is_complete', True):
                 report['warnings'].append(f"Shapefile bundle incomplete. Missing: {bundle_info.get('missing_files', [])}")
-            
+
             if not bundle_info.get('has_prj', False):
                 report['warnings'].append("No .prj file found - CRS information may be missing")
-        
-        # Validate geometries
-        geom_validation = validate_geometries(gdf)
-        report['geometry_validation'] = geom_validation
 
-        # Run extended checks (topology, attributes, coordinates)
-        checks = run_checks(gdf)
-        report['checks'] = checks
+        # Validate geometries, run checks, build warnings and status.
+        _populate_report(report, gdf)
 
-        def _sub(*keys):
-            """Defensively walk nested check dicts; return {} on any miss/error."""
-            node = checks
-            for key in keys:
-                if not isinstance(node, dict):
-                    return {}
-                node = node.get(key, {})
-            return node if isinstance(node, dict) else {}
+        # Optional spec conformance profile.
+        if profile:
+            from geolint.core.profiles import run_profile
+            conformance = run_profile(path, profile, gdf=gdf)
+            report['conformance'] = conformance
+            for res in conformance.get('checks', {}).values():
+                if res.get('status') == 'fail' and res.get('severity') == 'error':
+                    report['warnings'].append(
+                        f"[{conformance.get('profile')}] {res.get('title')}: {res.get('message')}"
+                    )
 
-        dup_geom = _sub('topology', 'duplicate_geometries')
-        if dup_geom.get('duplicate_count', 0) > 0:
-            report['warnings'].append(f"Found {dup_geom['duplicate_count']} duplicate geometries")
-
-        overlaps = _sub('topology', 'overlapping_polygons')
-        if not overlaps.get('skipped', False) and overlaps.get('overlap_pair_count', 0) > 0:
-            report['warnings'].append(f"Found {overlaps['overlap_pair_count']} overlapping polygon pairs")
-
-        id_uniq = _sub('attributes', 'id_uniqueness')
-        if id_uniq.get('duplicate_count', 0) > 0:
-            report['warnings'].append(
-                f"Found {id_uniq['duplicate_count']} duplicate ID values in column '{id_uniq.get('id_column')}'"
-            )
-
-        winding = _sub('coordinates', 'winding_order')
-        if winding.get('non_compliant_count', 0) > 0:
-            report['warnings'].append(
-                f"Found {winding['non_compliant_count']} polygons with non-RFC7946 winding order"
-            )
-
-        coord_range = _sub('coordinates', 'coordinate_range')
-        if coord_range.get('applicable', False) and coord_range.get('out_of_range_count', 0) > 0:
-            report['warnings'].append(
-                f"Found {coord_range['out_of_range_count']} features with out-of-range coordinates"
-            )
-
-        shp_fields = _sub('attributes', 'shapefile_field_names')
-        if (shp_fields.get('long_names') or shp_fields.get('truncation_collisions')
-                or shp_fields.get('non_ascii_names')):
-            report['warnings'].append("Shapefile-unsafe attribute field names detected")
-
-        # Add warnings based on validation results
-        if geom_validation['invalid_count'] > 0:
-            report['warnings'].append(f"Found {geom_validation['invalid_count']} invalid geometries")
-        
-        if geom_validation['empty_count'] > 0:
-            report['warnings'].append(f"Found {geom_validation['empty_count']} empty geometries")
-
-        if geom_validation.get('null_count', 0) > 0:
-            report['warnings'].append(f"Found {geom_validation['null_count']} null geometries")
-        
-        if geom_validation['mixed_types']:
-            report['warnings'].append(f"Mixed geometry types detected: {geom_validation['geometry_types']}")
-        
-        if gdf.crs is None:
-            report['warnings'].append("No CRS information found")
-        
-        # Overall status
-        has_issues = (
-            geom_validation['invalid_count'] > 0 or
-            geom_validation['empty_count'] > 0 or
-            geom_validation.get('null_count', 0) > 0 or
-            gdf.crs is None
-        )
-        report['validation']['has_issues'] = has_issues
-        report['validation']['status'] = 'issues_found' if has_issues else 'clean'
-        
     except (FileNotFoundError, ValueError, OSError) as e:
         report['validation']['loaded_successfully'] = False
         report['errors'].append(f"Failed to load dataset: {str(e)}")

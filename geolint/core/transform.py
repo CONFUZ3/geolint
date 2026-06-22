@@ -237,6 +237,97 @@ def batch_reproject(
     return reprojected_datasets, batch_report
 
 
+def align_layers_crs(layers: Dict[str, gpd.GeoDataFrame], *, policy: str = "error",
+                     target_crs: Union[str, int, None] = None) -> Tuple[Dict[str, gpd.GeoDataFrame], Dict]:
+    """
+    Ensure all layers share a single CRS before inter-layer checks.
+
+    Args:
+        layers: Mapping of layer name -> GeoDataFrame.
+        policy: "error" (default, safe) reports a mismatch and runs nothing;
+            "align" reprojects layers to a common target CRS.
+        target_crs: Explicit target for the "align" policy; otherwise the most
+            common CRS is used, falling back to the first layer's CRS.
+
+    Returns:
+        Tuple of (possibly-reprojected layers, alignment_report). The report has
+        keys: aligned, policy, target_crs, crs_per_layer, reprojected,
+        unalignable, reason.
+    """
+    names = list(layers.keys())
+    crs_per_layer = {
+        name: {
+            'epsg': layers[name].crs.to_epsg() if layers[name].crs is not None else None,
+            'crs': layers[name].crs.to_string() if layers[name].crs is not None else None,
+        }
+        for name in names
+    }
+    report = {
+        'aligned': False,
+        'policy': policy,
+        'target_crs': None,
+        'crs_per_layer': crs_per_layer,
+        'reprojected': [],
+        'unalignable': [],
+        'reason': None,
+    }
+
+    # 0 or 1 layers are trivially aligned.
+    if len(names) <= 1:
+        report['aligned'] = True
+        if names:
+            report['target_crs'] = crs_per_layer[names[0]]['crs']
+        return layers, report
+
+    crs_strings = {crs_per_layer[n]['crs'] for n in names}
+    has_none = any(crs_per_layer[n]['crs'] is None for n in names)
+
+    if policy == "error":
+        if has_none:
+            report['reason'] = 'one or more layers have no CRS'
+            return layers, report
+        if len(crs_strings) > 1:
+            report['reason'] = 'layers have differing CRS'
+            return layers, report
+        report['aligned'] = True
+        report['target_crs'] = crs_per_layer[names[0]]['crs']
+        return layers, report
+
+    # policy == "align"
+    if target_crs is not None:
+        tgt = target_crs
+    else:
+        common = detect_common_crs(list(layers.values()))
+        tgt = common.get('common_crs') or crs_per_layer[names[0]]['crs']
+    if tgt is None:
+        report['reason'] = 'no usable target CRS (all layers missing CRS)'
+        return layers, report
+
+    tgt_crs = CRS.from_user_input(tgt)
+    aligned_layers = {}
+    for name in names:
+        gdf = layers[name]
+        if gdf.crs is None:
+            report['unalignable'].append(name)
+            aligned_layers[name] = gdf
+        elif gdf.crs == tgt_crs:
+            aligned_layers[name] = gdf
+        else:
+            reprojected, rep = reproject_dataset(gdf, tgt)
+            if rep.get('transformed'):
+                aligned_layers[name] = reprojected
+                report['reprojected'].append(name)
+            else:
+                report['unalignable'].append(name)
+                aligned_layers[name] = gdf
+
+    report['target_crs'] = tgt_crs.to_string()
+    report['aligned'] = len(report['unalignable']) == 0
+    if not report['aligned']:
+        report['reason'] = f"could not align layers: {report['unalignable']}"
+    return aligned_layers, report
+
+
 def detect_common_crs(datasets: List[gpd.GeoDataFrame]) -> Dict[str, Union[str, int, List[Dict]]]:
     """
     Detect the most common CRS among multiple datasets.

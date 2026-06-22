@@ -56,6 +56,7 @@ def generate_report(
         'shapefile_bundle': validation_report.get('shapefile_bundle', {}),
         'geometry_validation': validation_report.get('geometry_validation', {}),
         'checks': validation_report.get('checks', {}),
+        'conformance': validation_report.get('conformance', {}),
         'warnings': validation_report.get('warnings', []),
         'errors': validation_report.get('errors', [])
     }
@@ -115,6 +116,38 @@ def generate_batch_report(
         report['error'] = batch_results.get('error', 'Unknown error')
     
     return report
+
+
+def generate_multilayer_report(
+    per_layer_reports: Dict[str, Dict],
+    inter_layer_results: Dict,
+    crs_alignment: Dict,
+) -> Dict[str, Any]:
+    """
+    Assemble a multi-layer report.
+
+    Args:
+        per_layer_reports: Mapping of layer name -> single-layer report
+            (output of generate_report).
+        inter_layer_results: Output of run_multilayer_checks ({} when CRS could
+            not be aligned).
+        crs_alignment: Alignment report from align_layers_crs.
+
+    Returns:
+        Report dict with a top-level 'inter_layer' group and 'per_layer' map.
+    """
+    layers = list(per_layer_reports.keys())
+    return {
+        'geolint_version': GEOLINT_VERSION,
+        'timestamp': datetime.now().isoformat(),
+        'inter_layer': {
+            'layer_count': len(layers),
+            'layers': layers,
+            'crs_alignment': crs_alignment or {},
+            'checks': inter_layer_results or {},
+        },
+        'per_layer': per_layer_reports,
+    }
 
 
 def _calculate_health_score(report: Dict) -> float:

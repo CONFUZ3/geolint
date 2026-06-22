@@ -25,7 +25,8 @@ import pandas as pd
 from geolint.core import (
     run_validation, get_crs_info, infer_crs, get_popular_crs,
     fix_geometries, remove_empty_geometries, reproject_dataset,
-    BatchProcessor, generate_report
+    BatchProcessor, generate_report,
+    run_profile, list_profiles, run_multilayer_validation,
 )
 from geolint.core.report import format_report_for_display
 
@@ -34,7 +35,8 @@ from geolint.web.components import (
     metric_card, status_badge, crs_selector, file_uploader,
     validation_dashboard, batch_queue_display, progress_bar,
     error_message, success_message, warning_message, info_message,
-    download_section, expandable_section, create_map_visualization
+    download_section, expandable_section, create_map_visualization,
+    conformance_panel, inter_layer_dashboard,
 )
 
 
@@ -257,20 +259,26 @@ def render_sidebar():
     st.sidebar.markdown("**Geospatial Data Linting Tool**")
     
     # Mode selection
-    mode = st.sidebar.radio(
-        "Select Mode:",
-        ["Single File", "Batch Processing"],
-        index=0 if st.session_state.current_mode == 'single' else 1
+    _modes = ["Single File", "Batch Processing", "Multi-Layer"]
+    _mode_index = {'single': 0, 'batch': 1, 'multilayer': 2}.get(
+        st.session_state.current_mode, 0
     )
-    
-    st.session_state.current_mode = 'single' if mode == "Single File" else 'batch'
-    
+    mode = st.sidebar.radio("Select Mode:", _modes, index=_mode_index)
+
+    st.session_state.current_mode = {
+        "Single File": 'single',
+        "Batch Processing": 'batch',
+        "Multi-Layer": 'multilayer',
+    }[mode]
+
     # Navigation
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Navigation")
-    
+
     if st.session_state.current_mode == 'single':
         pages = ["Upload & View", "Change CRS", "AutoFix", "Download"]
+    elif st.session_state.current_mode == 'multilayer':
+        pages = ["Upload layers", "Define rules", "Results"]
     else:
         pages = ["Upload", "Queue", "Process", "Download"]
     
@@ -382,6 +390,7 @@ def single_file_mode():
                     st.session_state.validation_reports = [validation_report]
                     st.session_state.processed_data = gdf
                     st.session_state.original_data = gdf.copy()  # Keep original for comparison
+                    st.session_state.uploaded_temp_path = str(tmp_path)
                     
                     # Check CRS sanity
                     crs_present = validation_report.get('validation', {}).get('crs_present', False)
@@ -541,6 +550,28 @@ def single_file_mode():
                         s, v = _count_status(dup_verts.get('features_with_duplicate_vertices'))
                         metric_card("Duplicate Vertices", v, status=s)
 
+                    coverage_gaps = topology.get('coverage_gaps', {}) or {}
+                    if 'error' in coverage_gaps or not coverage_gaps.get('applicable', False):
+                        metric_card("Coverage Gaps", "n/a", status="info")
+                    else:
+                        s, v = _count_status(coverage_gaps.get('gap_count'))
+                        metric_card("Coverage Gaps", v, status=s)
+
+                    lines = topology.get('lines', {}) or {}
+                    dangles = lines.get('dangles', {}) or {}
+                    if 'error' in dangles or not dangles.get('applicable', False):
+                        metric_card("Line Dangles", "n/a", status="info")
+                    else:
+                        s, v = _count_status(dangles.get('dangle_count'))
+                        metric_card("Line Dangles", v, status=s)
+
+                    self_int = lines.get('self_intersections', {}) or {}
+                    if 'error' in self_int or not self_int.get('applicable', False):
+                        metric_card("Self-intersecting Lines", "n/a", status="info")
+                    else:
+                        s, v = _count_status(self_int.get('self_intersecting_count'))
+                        metric_card("Self-intersecting Lines", v, status=s)
+
                 with col2:
                     st.markdown("#### Attributes")
 
@@ -588,6 +619,28 @@ def single_file_mode():
                         metric_card("Out-of-range Coords", v, status=s)
 
             expandable_section("Data Quality Checks", _render_data_quality_checks, expanded=False)
+
+            # Spec conformance profile (RFC 7946 / GeoPackage / GeoParquet)
+            def _render_conformance():
+                profiles = list_profiles()
+                labels = {p['title']: p['name'] for p in profiles}
+                choice = st.selectbox(
+                    "Conformance profile",
+                    ["(none)"] + list(labels.keys()),
+                    key="conformance_profile_choice",
+                )
+                if choice == "(none)":
+                    st.caption("Select a profile to check spec conformance.")
+                    return
+                source = st.session_state.get('uploaded_temp_path')
+                gdf = st.session_state.get('processed_data')
+                if source is None and gdf is None:
+                    st.info("Upload a dataset first.")
+                    return
+                result = run_profile(source or gdf, labels[choice], gdf=gdf)
+                conformance_panel(result)
+
+            expandable_section("Spec Conformance", _render_conformance, expanded=False)
 
         # Step 2: CRS Management & Comparison
         st.markdown("## Step 2: Change Coordinate Reference System")
@@ -1095,6 +1148,75 @@ def batch_processing_mode():
                 )
 
 
+def multilayer_mode():
+    """Multi-layer / inter-layer validation page."""
+    st.markdown("# Multi-Layer Validation")
+    st.markdown(
+        "Upload two or more layers (separate files, or a multi-layer GeoPackage) "
+        "and check relationships between them."
+    )
+
+    uploaded = st.file_uploader(
+        "Upload layers",
+        type=["zip", "gpkg", "geojson", "json", "kml", "parquet", "csv"],
+        accept_multiple_files=True,
+        key="multilayer_uploader",
+    )
+    if not uploaded:
+        info_message("Upload at least two layers (or one multi-layer GeoPackage).")
+        return
+
+    # Persist uploads to temp files so path-based loading/checks work.
+    temp_paths = []
+    for uf in uploaded:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(uf.name).suffix) as tmp:
+            tmp.write(uf.getvalue())
+            temp_paths.append(Path(tmp.name))
+
+    # Resolve the available layer names (handles multi-layer GeoPackage).
+    from geolint.core.validation import list_layers
+    if len(temp_paths) == 1 and temp_paths[0].suffix.lower() in ('.gpkg', '.sqlite', '.gdb'):
+        available = list_layers(temp_paths[0])
+        inputs = temp_paths[0]
+    else:
+        available = [Path(uf.name).stem for uf in uploaded]
+        inputs = temp_paths
+
+    if len(available) < 2:
+        info_message("Need at least two layers for inter-layer checks.")
+        return
+
+    crs_policy = st.radio("CRS policy", ["error", "align"], horizontal=True)
+    target_crs = None
+    if crs_policy == "align":
+        target_crs = st.text_input("Target CRS (optional, e.g. EPSG:3857)") or None
+
+    col1, col2 = st.columns(2)
+    with col1:
+        overlap_pairs = st.multiselect(
+            "Must-not-overlap (A:B)",
+            [f"{a}:{b}" for a in available for b in available if a != b],
+        )
+        coverage_sel = st.multiselect("Coverage-gap layers", available)
+    with col2:
+        covered_pairs = st.multiselect(
+            "Must-be-covered-by (A:B)",
+            [f"{a}:{b}" for a in available for b in available if a != b],
+        )
+
+    if st.button("Run multi-layer checks", type="primary"):
+        with st.spinner("Running inter-layer checks..."):
+            report, _ = run_multilayer_validation(
+                inputs,
+                crs_policy=crs_policy,
+                target_crs=target_crs,
+                coverage_layers=coverage_sel or [],
+                must_not_overlap=[tuple(p.split(":", 1)) for p in overlap_pairs],
+                must_be_covered_by=[tuple(p.split(":", 1)) for p in covered_pairs],
+            )
+        inter_layer_dashboard(report)
+
+
 def main():
     """Main application entry point."""
     # Configure page
@@ -1117,6 +1239,8 @@ def main():
     # Main content area
     if st.session_state.current_mode == 'single':
         single_file_mode()
+    elif st.session_state.current_mode == 'multilayer':
+        multilayer_mode()
     else:
         batch_processing_mode()
     

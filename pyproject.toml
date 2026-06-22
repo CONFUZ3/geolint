@@ -38,6 +38,8 @@ dependencies = [
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "pyarrow>=12.0.0",
+    "rich>=13.0.0",
+    "prompt_toolkit>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -59,9 +61,15 @@ Documentation = "https://geolint.readthedocs.io"
 [project.scripts]
 geolint = "geolint.cli.main:app"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["geolint*"]
+
+[tool.setuptools.package-data]
+"geolint.web" = ["styles.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

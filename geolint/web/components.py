@@ -958,3 +958,97 @@ def expandable_section(title: str, content: Any, expanded: bool = False) -> None
             content()
         else:
             st.write(content)
+
+
+def conformance_panel(conformance: Dict) -> None:
+    """
+    Render a spec-conformance profile result.
+
+    Args:
+        conformance: Output of geolint.core.profiles.run_profile.
+    """
+    if not conformance:
+        st.info("No conformance profile run.")
+        return
+    if conformance.get('error'):
+        st.warning(f"Profile error: {conformance['error']}")
+        return
+
+    title = conformance.get('title', conformance.get('profile', 'profile'))
+    if conformance.get('conformant'):
+        success_message(f"Conformant with {title}")
+    else:
+        warning_message(f"Not conformant with {title}")
+
+    _status_map = {'pass': 'success', 'fail': 'error', 'skip': 'info', 'error': 'warning'}
+    for res in conformance.get('checks', {}).values():
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"**{res.get('title', res.get('check_id'))}** — {res.get('message', '')}")
+        with col2:
+            status_badge(res.get('status', 'info'), _status_map.get(res.get('status'), 'info'))
+
+
+def inter_layer_dashboard(report: Dict) -> None:
+    """
+    Render inter-layer / coverage check results from a multi-layer report.
+
+    Args:
+        report: Output of generate_multilayer_report (has an 'inter_layer' key).
+    """
+    inter = report.get('inter_layer', {}) if report else {}
+    layers = inter.get('layers', [])
+    st.markdown(f"**Layers ({inter.get('layer_count', 0)}):** {', '.join(layers) or '(none)'}")
+
+    alignment = inter.get('crs_alignment', {})
+    if alignment.get('aligned'):
+        success_message(f"CRS aligned (target {alignment.get('target_crs')})")
+    else:
+        warning_message(
+            "CRS not aligned — inter-layer checks skipped",
+            alignment.get('reason'),
+        )
+
+    checks = inter.get('checks', {})
+
+    def _count_status(value):
+        if not isinstance(value, int):
+            return "info", "n/a"
+        return ("error" if value > 0 else "success"), value
+
+    coverage = checks.get('coverage_gaps') or {}
+    overlaps = checks.get('must_not_overlap') or []
+    covered = checks.get('must_be_covered_by') or []
+
+    if coverage:
+        st.markdown("#### Coverage gaps")
+        cols = st.columns(max(1, min(3, len(coverage))))
+        for i, (name, res) in enumerate(coverage.items()):
+            with cols[i % len(cols)]:
+                if res.get('error'):
+                    metric_card(name, "error", status="warning")
+                elif not res.get('applicable', True):
+                    metric_card(name, "n/a", status="info")
+                else:
+                    s, v = _count_status(res.get('gap_count'))
+                    metric_card(name, v, status=s)
+
+    if overlaps:
+        st.markdown("#### Must-not-overlap")
+        for res in overlaps:
+            label = f"{res.get('layer_a')} × {res.get('layer_b')}"
+            if res.get('error'):
+                metric_card(label, "error", status="warning")
+            else:
+                s, v = _count_status(res.get('overlap_pair_count'))
+                metric_card(label, v, status=s)
+
+    if covered:
+        st.markdown("#### Must-be-covered-by")
+        for res in covered:
+            label = f"{res.get('layer_a')} ⊆ {res.get('layer_b')}"
+            if res.get('error'):
+                metric_card(label, "error", status="warning")
+            else:
+                s, v = _count_status(res.get('uncovered_count'))
+                metric_card(label, v, status=s)
