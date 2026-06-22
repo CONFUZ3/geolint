@@ -74,23 +74,29 @@ A robust, open-source Python toolkit to systematically detect, validate, repair,
 
 ### Installation
 
-To run from source, install the dependencies:
+Install from PyPI (this puts the `geolint` command on your PATH):
 
 ```bash
-pip install -r requirements.txt
+pip install geolint            # core CLI
+pip install "geolint[web]"     # also install the Streamlit web UI
 ```
 
-To install the package itself (this puts the `geolint` command on your PATH), run from the repo root:
+Optional extras: `web` (Streamlit UI), `yaml` (YAML config), `duckdb` (DuckDB backend), `cloud` (S3/remote I/O). Combine them, e.g. `pip install "geolint[web,cloud]"`.
+
+To install from source, run from the repo root:
 
 ```bash
 pip install .          # regular install
 pip install -e .       # editable/development install
+pip install -e ".[dev]"  # with the test/lint toolchain
 ```
 
 ### Run the Web App
 
+The web UI ships as an optional extra (`pip install "geolint[web]"`), then:
+
 ```bash
-streamlit run geolint/web/app.py
+geolint web
 ```
 
 Open your browser to `http://localhost:8501`

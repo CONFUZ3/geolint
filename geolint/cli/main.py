@@ -443,6 +443,14 @@ def _cmd_batch(args: argparse.Namespace) -> int:
 
 
 def _cmd_web(args: argparse.Namespace) -> int:
+    import importlib.util
+
+    if importlib.util.find_spec("streamlit") is None:
+        print(
+            "The web UI requires extra dependencies that are not installed.\n"
+            'Install them with:  pip install "geolint[web]"'
+        )
+        return 1
     try:
         import subprocess
         import sys as _sys
