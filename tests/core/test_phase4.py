@@ -36,6 +36,11 @@ class TestDuckDBBackend:
         # parquet handling tracks duckdb availability
         assert can_handle("data.parquet") == duckdb_available()
 
+    def test_can_handle_strips_query_string(self):
+        # Presigned remote Parquet URLs carry a query string.
+        assert can_handle("https://h/data.parquet?token=abc") == duckdb_available()
+        assert can_handle("s3://b/k.pq?x=1") == duckdb_available()
+
     def test_quick_stats(self, tmp_path):
         pytest.importorskip("duckdb")
         path = tmp_path / "pts.parquet"

@@ -96,6 +96,18 @@ class TestContracts:
         v = check_schema_contract(_contract_gdf(), {'geometry_type': 'Point'})
         assert any(x['rule'] == 'geometry_type' and x['count'] == 3 for x in v)
 
+    def test_geometry_type_sample_is_positional_with_null(self):
+        # A leading null geometry must not offset the reported positional index.
+        gdf = gpd.GeoDataFrame(
+            {'id': [1, 2, 3]},
+            geometry=[None, Point(0, 0), Polygon([(0, 0), (1, 0), (1, 1)])],
+            crs='EPSG:4326',
+        )
+        geom = [x for x in check_schema_contract(gdf, {'geometry_type': 'Polygon'})
+                if x['rule'] == 'geometry_type'][0]
+        assert geom['count'] == 1        # only the Point; null is not a type violation
+        assert geom['sample'] == [1]     # positional index of the Point, not 0
+
     def test_crs_mismatch(self):
         v = check_schema_contract(_contract_gdf(), {'crs': 'EPSG:3857'})
         assert any(x['rule'] == 'crs' for x in v)

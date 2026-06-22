@@ -253,8 +253,9 @@ def validate_geometries(gdf: gpd.GeoDataFrame) -> Dict[str, Union[int, bool, lis
     multipart_mask = geom_types_series.apply(lambda t: str(t).startswith('Multi') if t else False)
     multipart_count = int(multipart_mask.sum())
 
-    # Invalid geometry indices (invalid or null)
-    invalid_indices = gdf[~valid_mask].index.tolist()
+    # Invalid geometry indices (invalid or null), as 0-based positions so they
+    # align with the positional sample indices used by every other check.
+    invalid_indices = [pos for pos, ok in enumerate(valid_mask) if not ok]
     
     return {
         'total_features': total_features,

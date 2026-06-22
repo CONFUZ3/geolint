@@ -126,8 +126,13 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
         findings = report.get("findings", [])
 
-        # Write a baseline of the current findings, then exit.
+        # Write a baseline of the current findings, then exit. A hard load error
+        # must still fail rather than silently writing an empty baseline.
         if args.write_baseline:
+            if full_report.get("errors") or report.get("validation", {}).get("status") == "error":
+                print(report["errors"][0] if report.get("errors")
+                      else "Cannot write baseline: dataset failed to load")
+                return 1
             write_baseline(args.write_baseline, findings)
             print(f"Baseline written to {args.write_baseline} ({len(findings)} findings)")
             return 0

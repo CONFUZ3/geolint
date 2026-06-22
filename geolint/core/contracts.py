@@ -83,8 +83,11 @@ def check_schema_contract(gdf: gpd.GeoDataFrame, contract: Dict) -> List[Dict]:
         allowed = {expected_geom}
         if expected_geom in ('Polygon', 'LineString', 'Point'):
             allowed.add('Multi' + expected_geom)
-        bad = gdf.geom_type.dropna()
-        bad_mask = ~bad.isin(allowed)
+        # Operate on the full series (not dropna) so positional indices stay
+        # aligned with the rest of the report; null geometries are not a
+        # geometry-type violation (they are reported separately).
+        types = gdf.geom_type
+        bad_mask = types.notna() & ~types.isin(allowed)
         n = int(bad_mask.sum())
         if n > 0:
             violations.append(_violation(

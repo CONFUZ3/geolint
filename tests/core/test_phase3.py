@@ -73,6 +73,17 @@ class TestErrorLayer:
         assert data == {'type': 'FeatureCollection', 'features': []}
 
 
+class TestInvalidIndicesPositional:
+    def test_positional_not_label(self):
+        from geolint.core.validation import validate_geometries
+        gdf = gpd.GeoDataFrame(
+            {'id': [1, 2]}, geometry=[box(0, 0, 1, 1), _bowtie()], crs='EPSG:4326'
+        )
+        gdf.index = [100, 200]  # non-default labels
+        res = validate_geometries(gdf)
+        assert res['invalid_indices'] == [1]  # positional, not the label 200
+
+
 class TestPrecommitEntry:
     def _run(self, *args):
         code = (

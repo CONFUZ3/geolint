@@ -7,7 +7,6 @@ memory. This is an opt-in fast path; everything degrades gracefully when the
 ``duckdb`` package is not installed.
 """
 
-from pathlib import Path
 from typing import Dict, Optional
 
 
@@ -74,4 +73,7 @@ def quick_stats(path, *, geometry_column: str = "geometry") -> Dict:
 
 def can_handle(path) -> bool:
     """True when DuckDB is available and the path looks like a Parquet file."""
-    return duckdb_available() and Path(str(path)).suffix.lower() in ('.parquet', '.pq')
+    # Strip any URL query string (presigned S3/HTTP URLs always carry one)
+    # before checking the extension.
+    head = str(path).split('?', 1)[0].lower()
+    return duckdb_available() and head.endswith(('.parquet', '.pq'))

@@ -316,6 +316,13 @@ class TestConfigGatingCLI:
         r = run_cli("validate", str(gpkg), "--strict", "--baseline", str(base))
         assert r.returncode == 0, r.stderr or r.stdout
 
+    def test_write_baseline_fails_on_unloadable(self, tmp_path):
+        bad = tmp_path / "bad.zip"
+        bad.write_bytes(b"not a real zip")
+        base = tmp_path / "baseline.json"
+        r = run_cli("validate", str(bad), "--write-baseline", str(base))
+        assert r.returncode == 1  # a load failure must not silently write a baseline
+
     def test_contract_violation_gates(self, tmp_path):
         cfg = tmp_path / "geolint.toml"
         cfg.write_text(
